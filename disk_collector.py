@@ -79,15 +79,17 @@ class DiskHealthCollector:
             if partition.device.startswith(('/dev/sd', '/dev/nvme', '/dev/hd', '/dev/vd')):
                 # Extract base device name (remove partition number)
                 device = partition.device
-                if 'p' in device[-2:]:
-                    device = device[:-2]  # Remove partition number for NVMe
-                elif device[-1].isdigit():
-                    device = device[:-1]  # Remove partition number for SATA
+                if device.endswith(('p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8', 'p9')):
+                    device = device[:-2]  # Remove partition number for NVMe (e.g., nvme0n1p1 -> nvme0n1)
+                elif device[-1].isdigit() and not device[-2:].isdigit():
+                    device = device[:-1]  # Remove single digit partition number (e.g., sda1 -> sda)
+                elif device[-2:].isdigit():
+                    device = device[:-2]  # Remove two digit partition number (e.g., sda10 -> sda)
 
                 if device not in disks:
                     disks.append(device)
 
-        # Also check for additional devices
+        # Also check for additional devices that might not have mounted partitions
         try:
             result = subprocess.run(['lsblk', '-d', '-n', '-o', 'NAME,TYPE'],
                                   capture_output=True, text=True, timeout=10)
@@ -147,50 +149,64 @@ class DiskHealthCollector:
             if result.returncode != 0:
                 return {'error': 'smartctl not available'}
 
+            # Initialize variables
+            health_status = 'UNKNOWN'
+            attributes = {}
+            device_info = {}
+
             # Get SMART overall health
-            result = subprocess.run(['smartctl', '-H', device],
-                                  capture_output=True, text=True, timeout=30)
-            if result.returncode == 0:
-                health_output = result.stdout
-                if 'PASSED' in health_output:
-                    health_status = 'PASSED'
-                elif 'FAILED' in health_output:
-                    health_status = 'FAILED'
+            try:
+                result = subprocess.run(['sudo', 'smartctl', '-H', device],
+                                      capture_output=True, text=True, timeout=30)
+                if result.returncode == 0:
+                    health_output = result.stdout
+                    if 'PASSED' in health_output:
+                        health_status = 'PASSED'
+                    elif 'FAILED' in health_output:
+                        health_status = 'FAILED'
+                    else:
+                        health_status = 'UNKNOWN'
                 else:
+                    # Health check failed, but we can still get other SMART data
                     health_status = 'UNKNOWN'
-            else:
-                health_status = 'ERROR'
+            except Exception:
+                # Health check failed, but we can still get other SMART data
+                health_status = 'UNKNOWN'
 
             # Get detailed SMART attributes
-            result = subprocess.run(['smartctl', '-A', device],
-                                  capture_output=True, text=True, timeout=30)
-            attributes = {}
-            if result.returncode == 0:
-                for line in result.stdout.split('\n'):
-                    if line.strip() and not line.startswith('#') and not line.startswith('ID#'):
-                        parts = line.split()
-                        if len(parts) >= 10:
-                            try:
-                                attr_id = parts[0]
-                                attr_name = parts[1]
-                                raw_value = parts[-1]
-                                attributes[attr_name] = {
-                                    'id': attr_id,
-                                    'raw_value': raw_value,
-                                    'normalized': parts[3] if len(parts) > 3 else 'N/A'
-                                }
-                            except IndexError:
-                                continue
+            try:
+                result = subprocess.run(['sudo', 'smartctl', '-A', device],
+                                      capture_output=True, text=True, timeout=30)
+                if result.returncode == 0:
+                    for line in result.stdout.split('\n'):
+                        if line.strip() and not line.startswith('#') and not line.startswith('ID#'):
+                            parts = line.split()
+                            if len(parts) >= 10:
+                                try:
+                                    attr_id = parts[0]
+                                    attr_name = parts[1]
+                                    raw_value = parts[-1]
+                                    attributes[attr_name] = {
+                                        'id': attr_id,
+                                        'raw_value': raw_value,
+                                        'normalized': parts[3] if len(parts) > 3 else 'N/A'
+                                    }
+                                except IndexError:
+                                    continue
+            except Exception:
+                pass
 
             # Get device information
-            result = subprocess.run(['smartctl', '-i', device],
-                                  capture_output=True, text=True, timeout=30)
-            device_info = {}
-            if result.returncode == 0:
-                for line in result.stdout.split('\n'):
-                    if ':' in line:
-                        key, value = line.split(':', 1)
-                        device_info[key.strip()] = value.strip()
+            try:
+                result = subprocess.run(['sudo', 'smartctl', '-i', device],
+                                      capture_output=True, text=True, timeout=30)
+                if result.returncode == 0:
+                    for line in result.stdout.split('\n'):
+                        if ':' in line:
+                            key, value = line.split(':', 1)
+                            device_info[key.strip()] = value.strip()
+            except Exception:
+                pass
 
             return {
                 'health_status': health_status,
@@ -223,6 +239,45 @@ class DiskHealthCollector:
                         }
                     except PermissionError:
                         continue
+
+            # Check for unmounted partitions on this device using lsblk
+            try:
+                result = subprocess.run(['lsblk', '-n', '-o', 'NAME,SIZE,MOUNTPOINT,FSTYPE', device],
+                                      capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    for line in result.stdout.strip().split('\n'):
+                        if line.strip():
+                            # Clean up the line by removing tree structure characters
+                            clean_line = line.replace('├─', '').replace('└─', '').replace('│', '').replace(' ', ' ').strip()
+                            parts = clean_line.split()
+                            if len(parts) >= 2:  # At minimum we need NAME and SIZE
+                                partition_name = parts[0]
+                                size = parts[1]
+                                mountpoint = ''
+                                fstype = ''
+
+                                # Find mountpoint and fstype - they might be empty
+                                for i in range(2, len(parts)):
+                                    # If the part doesn't look like a size (no K/M/G suffix), it's likely mountpoint or fstype
+                                    if not any(suffix in parts[i] for suffix in ['K', 'M', 'G', 'T']):
+                                        if mountpoint == '':
+                                            mountpoint = parts[i]
+                                        elif fstype == '':
+                                            fstype = parts[i]
+                                            break
+
+                                # If partition is not mounted (mountpoint is empty or '-'), add it to usage data
+                                if mountpoint == '' or mountpoint == '-' or mountpoint == '':
+                                    partition_device = f"{device}{partition_name.replace(device.replace('/dev/', ''), '')}"
+                                    usage_data[f"unmounted_{partition_name}"] = {
+                                        'device': partition_device,
+                                        'size': size,
+                                        'fstype': fstype,
+                                        'mountpoint': 'Not mounted',
+                                        'status': 'unmounted'
+                                    }
+            except Exception:
+                pass
 
             # Get disk I/O counters
             io_counters = psutil.disk_io_counters(perdisk=True)

@@ -188,7 +188,56 @@ ai_disks_health/
 ├── ai_analyzer.py       # Ollama AI integration and analysis
 ├── report_generator.py  # Report formatting and output
 ├── requirements.txt     # Python dependencies
+├── deployment.md        # Deployment guide
+├── deploy.sh           # Automated deployment script
+├── Dockerfile          # Docker container configuration
+├── docker-compose.yml  # Docker Compose setup
+├── docker-entrypoint.sh # Docker entrypoint script
 └── README.md           # This documentation
+```
+
+## Deployment
+
+### Quick Deployment
+
+Use the automated deployment script:
+
+```bash
+# Download and run deployment script
+curl -O https://raw.githubusercontent.com/ll918/ai_disks_health/main/deploy.sh
+chmod +x deploy.sh
+sudo ./deploy.sh
+```
+
+### Docker Deployment
+
+Build and run with Docker:
+
+```bash
+# Build the image
+docker build -t ai-disk-health .
+
+# Run the container
+docker run -it --privileged \
+  -v /dev:/dev:ro \
+  -v /sys:/sys:ro \
+  -v ./reports:/app/reports \
+  ai-disk-health
+```
+
+### Docker Compose
+
+Use Docker Compose for easier management:
+
+```bash
+# Start the service
+docker-compose up -d
+
+# View logs
+docker-compose logs -f ai-disk-health
+
+# Stop the service
+docker-compose down
 ```
 
 ## Dependencies

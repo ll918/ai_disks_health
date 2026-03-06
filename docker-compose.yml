@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  ai-disk-health:
+    build: .
+    container_name: ai-disk-health-monitor
+    restart: unless-stopped
+    privileged: true
+    volumes:
+      # Mount system devices for disk access
+      - /dev:/dev:ro
+      # Mount system directories for SMART data
+      - /sys:/sys:ro
+      # Mount reports directory
+      - ./reports:/app/reports
+      # Optional: Mount custom configuration
+      - ./config:/app/config:ro
+    ports:
+      - "11434:11434"  # Ollama API port
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+      - OLLAMA_MODELS=/root/.ollama/models
+      - PYTHONPATH=/app
+    command: ["--save", "--verbose"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Optional: Web dashboard for monitoring
+  grafana:
+    image: grafana/grafana:latest
+    container_name: ai-disk-health-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana-storage:/var/lib/grafana
+    depends_on:
+      - ai-disk-health
+    profiles:
+      - dashboard
+
+volumes:
+  grafana-storage:

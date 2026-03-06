@@ -91,39 +91,58 @@ Analyze the following disk health data and provide a comprehensive diagnostic re
 DISK HEALTH DATA:
 {formatted_data}
 
-Please provide a detailed analysis covering:
+Please provide a detailed analysis covering the following sections in EXACT order:
 
-1. **Overall Health Assessment**:
-   - Current health status of each disk
-   - Overall system disk health rating (Good/Warning/Critical)
-   - Confidence level in your assessment
+=== HEALTH ASSESSMENT ===
+- Overall Health Status: [GOOD/WARNING/CRITICAL/UNKNOWN]
+- System Health Rating: [EXCELLENT/GOOD/FAIR/POOR/CRITICAL]
+- Assessment Confidence: [HIGH/MEDIUM/LOW]
+- Total Disks Analyzed: [number]
+- Critical Issues Detected: [number]
 
-2. **Specific Issues Identified**:
-   - Any hardware problems detected
-   - Performance concerns
-   - Capacity issues
-   - Temperature problems
-   - SMART attribute warnings
+=== SPECIFIC ISSUES IDENTIFIED ===
+For each issue found, provide:
+- Issue Type: [SMART_ERROR/TEMPERATURE/CAPACITY/PERFORMANCE/UNKNOWN]
+- Severity: [CRITICAL/HIGH/MEDIUM/LOW]
+- Affected Component: [disk identifier or system component]
+- Description: [technical description of the issue]
 
-3. **Risk Assessment**:
-   - Probability of disk failure (Low/Medium/High)
-   - Timeframe for potential issues
-   - Critical warnings that need immediate attention
+=== RISK ASSESSMENT ===
+- Failure Probability: [LOW (<10%)/MEDIUM (10-50%)/HIGH (>50%)]
+- Timeframe: [IMMEDIATE (<24h)/SHORT (1-7 days)/MEDIUM (1-4 weeks)/LONG (>1 month)]
+- Risk Factors: [list specific factors contributing to risk]
+- Impact Assessment: [LOW/MEDIUM/HIGH - potential impact on system operation]
 
-4. **Actionable Recommendations**:
-   - Immediate actions required (if any)
-   - Preventive maintenance suggestions
-   - Monitoring recommendations
-   - When to consider disk replacement
+=== TECHNICAL METRICS ANALYSIS ===
+For each disk, analyze:
+- SMART Health Status: [PASSED/FAILED/UNKNOWN]
+- Temperature: [value]°C [NORMAL/ELEVATED/CRITICAL]
+- Capacity Utilization: [percentage]% [NORMAL/ELEVATED/CRITICAL]
+- I/O Performance: [NORMAL/DEGRADED/CRITICAL]
+- Key SMART Attributes of Concern: [list specific attributes with values]
 
-5. **Technical Details**:
-   - Key metrics that influenced your assessment
-   - Specific SMART attributes of concern
-   - Performance bottlenecks identified
+=== ACTIONABLE RECOMMENDATIONS ===
+Provide numbered recommendations in order of priority:
+1. [IMMEDIATE/URGENT/IMPORTANT/ROUTINE] - [specific action]
+2. [IMMEDIATE/URGENT/IMPORTANT/ROUTINE] - [specific action]
+3. [IMMEDIATE/URGENT/IMPORTANT/ROUTINE] - [specific action]
 
-Format your response as a structured report with clear sections and actionable items.
-Use technical accuracy while keeping recommendations practical and implementable."""
+For each recommendation include:
+- Priority Level: [IMMEDIATE/URGENT/IMPORTANT/ROUTINE]
+- Action Type: [MONITOR/INVESTIGATE/REPLACE/CONFIGURE/OTHER]
+- Implementation Window: [IMMEDIATE/24H/7DAYS/30DAYS/ROUTINE]
+- Expected Outcome: [technical benefit of taking this action]
 
+=== TECHNICAL SUMMARY ===
+- Root Cause Analysis: [technical explanation of primary issues]
+- Trend Analysis: [notable patterns or trends in the data]
+- Monitoring Focus: [specific metrics to monitor going forward]
+- Next Review Date: [recommended date for next comprehensive analysis]
+
+IMPORTANT: Use consistent technical terminology throughout the report.
+Maintain professional objectivity and technical accuracy.
+Format the response exactly as shown above with section headers in ALL CAPS and triple equals signs.
+Do not add additional sections or modify the structure."""
         return prompt
 
     def _format_data_for_prompt(self, disk_data: Dict[str, Any]) -> str:
@@ -224,6 +243,9 @@ Use technical accuracy while keeping recommendations practical and implementable
             'summary': self._extract_summary(response),
             'recommendations': self._extract_recommendations(response),
             'risk_level': self._extract_risk_level(response),
+            'health_assessment': self._extract_health_assessment(response),
+            'issues_identified': self._extract_issues(response),
+            'technical_metrics': self._extract_technical_metrics(response),
             'original_data_reference': {
                 'total_disks': len(original_data.get('disks', [])),
                 'collection_time': original_data.get('timestamp', 'Unknown')
@@ -300,6 +322,134 @@ Use technical accuracy while keeping recommendations practical and implementable
             return 'Low'
         else:
             return 'Unknown'
+
+    def _extract_health_assessment(self, response: str) -> Dict[str, Any]:
+        """Extract structured health assessment from AI response."""
+        assessment = {
+            'overall_status': 'Unknown',
+            'system_rating': 'Unknown',
+            'confidence': 'Unknown',
+            'disks_analyzed': 0,
+            'critical_issues': 0
+        }
+
+        # Extract from HEALTH ASSESSMENT section
+        lines = response.split('\n')
+        in_health_section = False
+
+        for line in lines:
+            if '=== health assessment ===' in line.lower():
+                in_health_section = True
+                continue
+            elif in_health_section and line.strip().startswith('==='):
+                in_health_section = False
+                continue
+
+            if in_health_section:
+                if 'overall health status:' in line.lower():
+                    status = line.split(':')[1].strip().strip('[]')
+                    assessment['overall_status'] = status
+                elif 'system health rating:' in line.lower():
+                    rating = line.split(':')[1].strip().strip('[]')
+                    assessment['system_rating'] = rating
+                elif 'assessment confidence:' in line.lower():
+                    confidence = line.split(':')[1].strip().strip('[]')
+                    assessment['confidence'] = confidence
+                elif 'total disks analyzed:' in line.lower():
+                    try:
+                        assessment['disks_analyzed'] = int(line.split(':')[1].strip())
+                    except ValueError:
+                        pass
+                elif 'critical issues detected:' in line.lower():
+                    try:
+                        assessment['critical_issues'] = int(line.split(':')[1].strip())
+                    except ValueError:
+                        pass
+
+        return assessment
+
+    def _extract_issues(self, response: str) -> List[Dict[str, Any]]:
+        """Extract structured issues from AI response."""
+        issues = []
+        lines = response.split('\n')
+        in_issues_section = False
+
+        for line in lines:
+            if '=== specific issues identified ===' in line.lower():
+                in_issues_section = True
+                continue
+            elif in_issues_section and line.strip().startswith('==='):
+                in_issues_section = False
+                continue
+
+            if in_issues_section and line.strip():
+                # Look for structured issue format
+                if 'issue type:' in line.lower() and 'severity:' in line.lower():
+                    issue = {
+                        'type': 'Unknown',
+                        'severity': 'Unknown',
+                        'component': 'Unknown',
+                        'description': 'No description provided'
+                    }
+
+                    # Extract issue type
+                    if 'issue type:' in line.lower():
+                        type_part = line.split('issue type:')[1].split('severity:')[0].strip().strip('[]')
+                        issue['type'] = type_part
+
+                    # Extract severity
+                    if 'severity:' in line.lower():
+                        severity_part = line.split('severity:')[1].split('affected component:')[0].strip().strip('[]')
+                        issue['severity'] = severity_part
+
+                    issues.append(issue)
+
+        return issues
+
+    def _extract_technical_metrics(self, response: str) -> Dict[str, Any]:
+        """Extract technical metrics from AI response."""
+        metrics = {
+            'disks': [],
+            'smart_status': {},
+            'temperature_analysis': {},
+            'capacity_analysis': {},
+            'io_performance': {}
+        }
+
+        lines = response.split('\n')
+        in_metrics_section = False
+        current_disk = None
+
+        for line in lines:
+            if '=== technical metrics analysis ===' in line.lower():
+                in_metrics_section = True
+                continue
+            elif in_metrics_section and line.strip().startswith('==='):
+                in_metrics_section = False
+                continue
+
+            if in_metrics_section:
+                # Look for disk-specific metrics
+                if line.strip().startswith('for each disk') or line.strip().startswith('disk'):
+                    continue
+                elif 'smart health status:' in line.lower():
+                    status = line.split(':')[1].strip().strip('[]')
+                    if current_disk:
+                        metrics['smart_status'][current_disk] = status
+                elif 'temperature:' in line.lower():
+                    temp_info = line.split(':')[1].strip()
+                    if current_disk:
+                        metrics['temperature_analysis'][current_disk] = temp_info
+                elif 'capacity utilization:' in line.lower():
+                    cap_info = line.split(':')[1].strip()
+                    if current_disk:
+                        metrics['capacity_analysis'][current_disk] = cap_info
+                elif 'i/o performance:' in line.lower():
+                    io_info = line.split(':')[1].strip()
+                    if current_disk:
+                        metrics['io_performance'][current_disk] = io_info
+
+        return metrics
 
     def _generate_fallback_analysis(self, disk_data: Dict[str, Any]) -> Dict[str, Any]:
         """

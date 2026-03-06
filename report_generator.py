@@ -82,19 +82,26 @@ class ReportGenerator:
         # Get summary data
         summary = analysis_data.get('summary', {})
         risk_level = analysis_data.get('risk_level', 'Unknown')
+        health_assessment = analysis_data.get('health_assessment', {})
 
         # Overall status with color coding
         health_status = summary.get('health_status', 'Unknown')
+        system_rating = health_assessment.get('system_rating', 'Unknown')
+        confidence = health_assessment.get('confidence', summary.get('confidence', 'Unknown'))
+
         status_color = self._get_status_color(health_status)
 
         summary_lines.append(f"Overall Health Status: {status_color}{health_status}{self.colors['reset']}")
-        summary_lines.append(f"Risk Level: {self._get_risk_color(risk_level)}{risk_level}{self.colors['reset']}")
-        summary_lines.append(f"Analysis Confidence: {summary.get('confidence', 'Unknown')}")
+        summary_lines.append(f"System Health Rating: {self._get_rating_color(system_rating)}{system_rating}{self.colors['reset']}")
+        summary_lines.append(f"Analysis Confidence: {self._get_confidence_color(confidence)}{confidence}{self.colors['reset']}")
 
         # Key metrics
-        critical_issues = summary.get('critical_issues', 0)
+        critical_issues = health_assessment.get('critical_issues', summary.get('critical_issues', 0))
         total_recommendations = summary.get('total_recommendations', 0)
+        # Get the correct disk count from original data reference instead of AI-extracted value
+        disks_analyzed = analysis_data.get('original_data_reference', {}).get('total_disks', 'Unknown')
 
+        summary_lines.append(f"Disks Analyzed: {self.colors['cyan']}{disks_analyzed}{self.colors['reset']}")
         summary_lines.append(f"Critical Issues: {self.colors['red']}{critical_issues}{self.colors['reset']}")
         summary_lines.append(f"Recommendations: {self.colors['blue']}{total_recommendations}{self.colors['reset']}")
 
@@ -186,6 +193,30 @@ class ReportGenerator:
         elif risk == 'medium':
             return self.colors['yellow']
         elif risk == 'high':
+            return self.colors['red']
+        else:
+            return self.colors['white']
+
+    def _get_rating_color(self, rating: str) -> str:
+        """Get color code based on system health rating."""
+        rating = rating.lower()
+        if rating in ['excellent', 'good']:
+            return self.colors['green']
+        elif rating == 'fair':
+            return self.colors['yellow']
+        elif rating in ['poor', 'critical']:
+            return self.colors['red']
+        else:
+            return self.colors['white']
+
+    def _get_confidence_color(self, confidence: str) -> str:
+        """Get color code based on analysis confidence."""
+        confidence = confidence.lower()
+        if confidence == 'high':
+            return self.colors['green']
+        elif confidence == 'medium':
+            return self.colors['yellow']
+        elif confidence == 'low':
             return self.colors['red']
         else:
             return self.colors['white']

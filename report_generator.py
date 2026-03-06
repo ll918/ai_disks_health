@@ -190,7 +190,7 @@ class ReportGenerator:
         else:
             return self.colors['white']
 
-    def save_report_to_file(self, report_text: str, filename: str = None) -> str | None:
+    def save_report_to_file(self, report_text: str, filename: str | None = None) -> str | None:
         """
         Save the report to a file.
 
@@ -223,7 +223,7 @@ def main():
     # Sample analysis data
     sample_data = {
         'timestamp': '2024-01-01T12:00:00',
-        'model_used': 'gemma3:4b',
+        'model_used': 'gemma3:1b',
         'summary': {
             'health_status': 'WARNING',
             'confidence': 'High',

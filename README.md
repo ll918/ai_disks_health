@@ -5,7 +5,7 @@ A Python application that uses AI (via Ollama) to evaluate disk health on Ubuntu
 ## Features
 
 - **Comprehensive Disk Monitoring**: Collects SMART data, disk usage, temperature, and I/O statistics
-- **AI-Powered Analysis**: Uses Ollama's LLM (gemma3:4b by default) for intelligent health assessment
+- **AI-Powered Analysis**: Uses Ollama's LLM (gemma3:1b by default) for intelligent health assessment
 - **Actionable Reports**: Generates detailed diagnostic reports with specific recommendations
 - **CLI Interface**: Easy-to-use command-line tool for on-demand analysis
 - **Fallback Mode**: Works even when AI service is unavailable
@@ -36,10 +36,10 @@ sudo apt install smartmontools
 
 ### 2. Download Ollama Model
 
-The application uses `gemma3:4b` by default, which should already be installed on your system. If not:
+The application uses `gemma3:1b` by default, which should already be installed on your system. If not:
 
 ```bash
-ollama pull gemma3:4b
+ollama pull gemma3:1b
 ```
 
 ## Usage
@@ -93,7 +93,7 @@ python main.py --help
 | `--verbose` | `-v` | Include detailed analysis in report |
 | `--save` | `-s` | Save report to file |
 | `--json` | `-j` | Output analysis in JSON format |
-| `--model` | `-m` | Ollama model to use (default: gemma3:4b) |
+| `--model` | `-m` | Ollama model to use (default: gemma3:1b) |
 | `--check-deps` | | Check if required dependencies are available |
 | `--version` | | Show version information |
 
@@ -105,7 +105,7 @@ python main.py --help
 ================================================================================
 🔍 AI DISK HEALTH DIAGNOSTIC REPORT
 ================================================================================
-Analysis Model: gemma3:4b
+Analysis Model: gemma3:1b
 Generated: 2024-01-01T12:00:00
 Disks Analyzed: 2
 Data Collected: 2024-01-01T11:30:00
@@ -140,7 +140,7 @@ Recommendations: 5
 ```json
 {
   "timestamp": "2024-01-01T12:00:00",
-  "model_used": "gemma3:4b",
+  "model_used": "gemma3:1b",
   "summary": {
     "health_status": "WARNING",
     "confidence": "High",

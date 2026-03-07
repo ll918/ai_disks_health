@@ -12,7 +12,7 @@ NC='\033[0m' # No Color
 
 # Configuration
 REPO_URL="https://github.com/ll918/ai_disks_health.git"
-INSTALL_DIR="/opt/ai-disk-health"
+INSTALL_DIR="/apps/ai-disk-health"
 PYTHON_VERSION="3.8"
 OLLAMA_MODEL="gemma3:1b"
 
@@ -81,23 +81,6 @@ install_system_deps() {
     success "System dependencies installed"
 }
 
-# Install Ollama
-install_ollama() {
-    log "Installing Ollama..."
-
-    if command -v ollama &> /dev/null; then
-        success "Ollama already installed"
-        return 0
-    fi
-
-    curl -fsSL https://ollama.com/install.sh | sh
-
-    # Add current user to ollama group
-    sudo usermod -a -G ollama $USER
-
-    success "Ollama installed"
-}
-
 # Download and setup application
 setup_application() {
     log "Setting up AI Disk Health Monitor..."
@@ -133,89 +116,6 @@ download_model() {
     else
         ollama pull $OLLAMA_MODEL
         success "Model $OLLAMA_MODEL downloaded"
-    fi
-}
-
-# Create systemd service
-create_service() {
-    log "Creating systemd service..."
-
-    SERVICE_FILE="/etc/systemd/system/ai-disk-health.service"
-
-    sudo tee $SERVICE_FILE > /dev/null <<EOF
-[Unit]
-Description=AI Disk Health Monitor
-After=network.target ollama.service
-Requires=ollama.service
-
-[Service]
-Type=simple
-User=root
-Group=root
-WorkingDirectory=$INSTALL_DIR
-ExecStart=/usr/bin/python3 $INSTALL_DIR/main.py --save
-Restart=always
-RestartSec=300
-Environment=PYTHONPATH=$INSTALL_DIR
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    sudo systemctl daemon-reload
-    sudo systemctl enable ai-disk-health
-
-    success "Systemd service created and enabled"
-}
-
-# Create convenience scripts
-create_scripts() {
-    log "Creating convenience scripts..."
-
-    # Main script
-    sudo tee /usr/local/bin/ai-disk-health > /dev/null <<'EOF'
-#!/bin/bash
-cd $INSTALL_DIR
-exec python3 main.py "$@"
-EOF
-
-    sudo chmod +x /usr/local/bin/ai-disk-health
-
-    # Update script
-    sudo tee /usr/local/bin/ai-disk-health-update > /dev/null <<'EOF'
-#!/bin/bash
-cd $INSTALL_DIR
-git pull
-pip3 install -r requirements.txt --upgrade
-ollama pull gemma3:1b
-systemctl restart ai-disk-health
-echo "AI Disk Health Monitor updated successfully"
-EOF
-
-    sudo chmod +x /usr/local/bin/ai-disk-health-update
-
-    success "Convenience scripts created"
-}
-
-# Test installation
-test_installation() {
-    log "Testing installation..."
-
-    cd $INSTALL_DIR
-
-    # Check dependencies
-    if python3 main.py --check-deps; then
-        success "Dependency check passed"
-    else
-        warning "Some dependencies may be missing, but installation can continue"
-    fi
-
-    # Test basic functionality
-    log "Running basic functionality test..."
-    if timeout 30 python3 main.py --json > /dev/null 2>&1; then
-        success "Basic functionality test passed"
-    else
-        warning "Basic test had issues, but installation may still work"
     fi
 }
 
@@ -261,14 +161,14 @@ main() {
     check_root
     check_requirements
     install_system_deps
-    install_ollama
+    #install_ollama
     setup_application
     download_model
-    create_service
-    create_scripts
-    test_installation
+    #create_service
+    #create_scripts
+    #test_installation
     show_summary
 }
 
 # Run main function
-main "$@"
+#main "$@"

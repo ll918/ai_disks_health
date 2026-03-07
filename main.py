@@ -9,6 +9,7 @@ It provides a command-line interface for analyzing disk health using Ollama AI.
 import sys
 import argparse
 import json
+import time
 from typing import Dict, Any, Optional
 from datetime import datetime
 
@@ -61,7 +62,10 @@ class DiskHealthMonitor:
 
             # Step 2: Analyze with AI
             print("\n🤖 Step 2: Analyzing with AI...")
+            start_time = time.time()
             analysis_result = self.analyzer.analyze_disk_health(disk_data)
+            end_time = time.time()
+            ai_analysis_time = end_time - start_time
 
             # Handle fallback analysis
             if 'fallback_analysis' in analysis_result:
@@ -69,6 +73,9 @@ class DiskHealthMonitor:
                 final_result = analysis_result['fallback_analysis']
             else:
                 final_result = analysis_result
+
+            # Add timing information to the result
+            final_result['ai_analysis_time'] = ai_analysis_time
 
             # Step 3: Generate and display report
             print("\n📋 Step 3: Generating report...")

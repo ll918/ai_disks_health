@@ -7,6 +7,8 @@ text format with clear sections and actionable information.
 """
 
 import json
+import pytz
+import re
 from typing import Dict, Any, List
 from datetime import datetime
 
@@ -34,18 +36,14 @@ class ReportGenerator:
         report_lines.append(self._generate_header(analysis_data))
         report_lines.append("")
 
-        # Executive Summary
-        report_lines.append(self._generate_executive_summary(analysis_data))
+        # Storage Configuration
+        report_lines.append(self._generate_storage_configuration(analysis_data))
         report_lines.append("")
 
         # Detailed Analysis
         if verbose:
             report_lines.append(self._generate_detailed_analysis(analysis_data))
             report_lines.append("")
-
-        # Recommendations
-        report_lines.append(self._generate_recommendations(analysis_data))
-        report_lines.append("")
 
         # Footer
         report_lines.append(self._generate_footer(analysis_data))
@@ -63,15 +61,58 @@ class ReportGenerator:
         model_used = analysis_data.get('model_used', 'Unknown')
         timestamp = analysis_data.get('timestamp', 'Unknown')
 
+        # Convert timestamp to local time if it's a valid datetime string
+        local_time = self._convert_to_local_time(timestamp)
+
         header_lines.append(f"Analysis Model: {model_used}")
-        header_lines.append(f"Generated: {timestamp}")
+        header_lines.append(f"Generated: {local_time}")
 
         if 'original_data_reference' in analysis_data:
             ref = analysis_data['original_data_reference']
+            collection_time = ref.get('collection_time', 'Unknown')
+            local_collection_time = self._convert_to_local_time(collection_time)
             header_lines.append(f"Disks Analyzed: {ref.get('total_disks', 'Unknown')}")
-            header_lines.append(f"Data Collected: {ref.get('collection_time', 'Unknown')}")
+            header_lines.append(f"Data Collected: {local_collection_time}")
+
+        # Add AI analysis timing if available
+        if 'ai_analysis_time' in analysis_data:
+            ai_time_seconds = analysis_data['ai_analysis_time']
+            minutes = int(ai_time_seconds // 60)
+            seconds = int(ai_time_seconds % 60)
+            header_lines.append(f"AI Analysis Time: {minutes} min {seconds} sec")
 
         return "\n".join(header_lines)
+
+    def _convert_to_local_time(self, timestamp: str) -> str:
+        """Convert UTC timestamp to local time (America/Toronto)."""
+        try:
+            # Parse the timestamp string
+            if isinstance(timestamp, str):
+                # Handle different timestamp formats
+                if 'T' in timestamp:
+                    # ISO format: 2024-01-01T12:00:00
+                    dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                else:
+                    # Try other common formats
+                    dt = datetime.fromisoformat(timestamp)
+            else:
+                return str(timestamp)
+
+            # Convert to local timezone (America/Toronto)
+            local_tz = pytz.timezone('America/Toronto')
+            if dt.tzinfo is None:
+                # If no timezone info, assume naive datetime is UTC
+                utc_tz = pytz.UTC
+                dt = utc_tz.localize(dt)
+
+            local_time = dt.astimezone(local_tz)
+
+            # Format with timezone info
+            return local_time.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+        except Exception:
+            # If conversion fails, return original timestamp
+            return timestamp
 
     def _generate_executive_summary(self, analysis_data: Dict[str, Any]) -> str:
         """Generate the executive summary section."""
@@ -106,6 +147,121 @@ class ReportGenerator:
         summary_lines.append(f"Recommendations: {self.colors['blue']}{total_recommendations}{self.colors['reset']}")
 
         return "\n".join(summary_lines)
+
+    def _generate_storage_configuration(self, analysis_data: Dict[str, Any]) -> str:
+        """Generate the storage configuration section."""
+        config_lines = []
+        config_lines.append("💾 STORAGE CONFIGURATION")
+        config_lines.append("-" * 40)
+
+        # Get device information from technical metrics or original data
+        technical_metrics = analysis_data.get('technical_metrics', {})
+        original_data_ref = analysis_data.get('original_data_reference', {})
+
+        # Try to get device info from technical metrics
+        smart_status = technical_metrics.get('smart_status', {})
+        temperature_analysis = technical_metrics.get('temperature_analysis', {})
+        device_models = technical_metrics.get('device_models', {})
+        disk_capacities = technical_metrics.get('disk_capacities', {})
+        filesystem_types = technical_metrics.get('filesystem_types', {})
+
+        # If we have device info from technical metrics, use it
+        if smart_status:
+            for device, status in smart_status.items():
+                config_lines.append(f"Device: {device}")
+                config_lines.append(f"  SMART Status: {status}")
+
+                # Add device model if available
+                if device in device_models and device_models[device] != 'Unknown':
+                    config_lines.append(f"  Model: {device_models[device]}")
+
+                # Add disk capacity if available
+                if device in disk_capacities and disk_capacities[device] != 'Unknown':
+                    config_lines.append(f"  Capacity: {disk_capacities[device]}")
+
+                # Add filesystem type if available
+                if device in filesystem_types and filesystem_types[device] != 'Unknown':
+                    config_lines.append(f"  Filesystem: {filesystem_types[device]}")
+
+                # Add temperature if available
+                if device in temperature_analysis:
+                    config_lines.append(f"  Temperature: {temperature_analysis[device]}")
+
+                config_lines.append("")
+        else:
+            # Enhanced fallback: Try to extract device info from the AI analysis text
+            analysis_text = analysis_data.get('analysis', '')
+            if analysis_text:
+                # Look for device information in the analysis text
+                device_info = self._extract_device_info_from_analysis(analysis_text)
+                if device_info:
+                    for device, info in device_info.items():
+                        config_lines.append(f"Device: {device}")
+                        if 'model' in info and info['model'] != 'Unknown':
+                            config_lines.append(f"  Model: {info['model']}")
+                        if 'capacity' in info and info['capacity'] != 'Unknown':
+                            config_lines.append(f"  Capacity: {info['capacity']}")
+                        if 'status' in info:
+                            config_lines.append(f"  Status: {info['status']}")
+                        if 'temperature' in info:
+                            config_lines.append(f"  Temperature: {info['temperature']}")
+                        config_lines.append("")
+                else:
+                    # Final fallback to showing basic disk count
+                    disks_analyzed = original_data_ref.get('total_disks', 'Unknown')
+                    config_lines.append(f"Total Disks: {disks_analyzed}")
+                    config_lines.append("Device details not available in this analysis")
+            else:
+                # Final fallback to showing basic disk count
+                disks_analyzed = original_data_ref.get('total_disks', 'Unknown')
+                config_lines.append(f"Total Disks: {disks_analyzed}")
+                config_lines.append("Device details not available in this analysis")
+
+        return "\n".join(config_lines)
+
+    def _extract_device_info_from_analysis(self, analysis_text: str) -> Dict[str, Dict[str, str]]:
+        """Extract device information from AI analysis text."""
+        device_info = {}
+        lines = analysis_text.split('\n')
+
+        current_device = None
+
+        for line in lines:
+            line = line.strip()
+
+            # Look for device identifiers
+            if '/dev/' in line and ('DISK' in line.upper() or 'DEVICE' in line.upper()):
+                device_match = re.search(r'/dev/[^,\s]+', line)
+                if device_match:
+                    current_device = device_match.group(0)
+                    if current_device not in device_info:
+                        device_info[current_device] = {}
+
+            # Extract model information
+            if current_device and ('model:' in line.lower() or 'device model:' in line.lower()):
+                model_match = re.search(r'(?:model|device model):\s*([^,\n]+)', line, re.IGNORECASE)
+                if model_match:
+                    device_info[current_device]['model'] = model_match.group(1).strip()
+
+            # Extract capacity information
+            if current_device and ('capacity:' in line.lower() or 'size:' in line.lower()):
+                capacity_match = re.search(r'(?:capacity|size):\s*([^,\n]+)', line, re.IGNORECASE)
+                if capacity_match:
+                    device_info[current_device]['capacity'] = capacity_match.group(1).strip()
+
+            # Extract status information
+            if current_device and ('status:' in line.lower() or 'health status:' in line.lower()):
+                status_match = re.search(r'(?:status|health status):\s*([^,\n]+)', line, re.IGNORECASE)
+                if status_match:
+                    device_info[current_device]['status'] = status_match.group(1).strip()
+
+            # Extract temperature information
+            if current_device and 'temperature:' in line.lower():
+                temp_match = re.search(r'temperature:\s*([^,\n]+)', line, re.IGNORECASE)
+                if temp_match:
+                    device_info[current_device]['temperature'] = temp_match.group(1).strip()
+
+        return device_info
 
     def _generate_detailed_analysis(self, analysis_data: Dict[str, Any]) -> str:
         """Generate the detailed analysis section."""

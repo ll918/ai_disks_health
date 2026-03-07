@@ -8,6 +8,8 @@ comprehensive diagnostic reports with actionable recommendations.
 
 import json
 import ollama
+import time
+import re
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 
@@ -300,15 +302,37 @@ Do not add additional sections or modify the structure."""
             if any(keyword in line_lower for keyword in ['recommendations', 'recommendation', 'suggestions', 'actions']):
                 in_recommendations = True
                 continue
+            elif in_recommendations and line_lower.startswith('==='):
+                # End of recommendations section
+                in_recommendations = False
+                continue
 
             if in_recommendations and line.strip() and not line.startswith('#'):
-                # Extract bullet points and numbered items
-                if line.strip().startswith(('-', '*', '•', '1.', '2.', '3.')):
-                    recommendations.append(line.strip())
-                elif len(line.strip()) > 20:  # Likely a recommendation sentence
-                    recommendations.append(line.strip())
+                # Extract properly formatted recommendations
+                line_stripped = line.strip()
 
-        return recommendations[:10]  # Limit to first 10 recommendations
+                # Check for numbered recommendations (1., 2., 3., etc.)
+                if re.match(r'^\d+\.\s+', line_stripped):
+                    recommendations.append(line_stripped)
+                # Check for bullet points
+                elif line_stripped.startswith(('-', '*', '•')):
+                    recommendations.append(line_stripped)
+                # Check for lines that start with priority levels
+                elif any(priority in line_lower for priority in ['immediate:', 'urgent:', 'important:', 'routine:']):
+                    recommendations.append(line_stripped)
+
+        # Filter out non-recommendation lines that might have been captured
+        filtered_recommendations = []
+        for rec in recommendations:
+            rec_lower = rec.lower()
+            # Skip lines that are section headers or formatting
+            if any(skip_word in rec_lower for skip_word in ['technical metrics analysis', 'detailed', 'trend analysis', 'monitoring focus', 'next review date']):
+                continue
+            # Only include lines that actually contain actionable items
+            if len(rec) > 10 and any(action_word in rec_lower for action_word in ['investigate', 'check', 'monitor', 'run', 'consider', 'review', 'analyze']):
+                filtered_recommendations.append(rec)
+
+        return filtered_recommendations
 
     def _extract_risk_level(self, response: str) -> str:
         """Extract risk level from AI response."""
@@ -413,7 +437,10 @@ Do not add additional sections or modify the structure."""
             'smart_status': {},
             'temperature_analysis': {},
             'capacity_analysis': {},
-            'io_performance': {}
+            'io_performance': {},
+            'device_models': {},
+            'filesystem_types': {},
+            'disk_capacities': {}
         }
 
         lines = response.split('\n')
@@ -448,6 +475,49 @@ Do not add additional sections or modify the structure."""
                     io_info = line.split(':')[1].strip()
                     if current_disk:
                         metrics['io_performance'][current_disk] = io_info
+                elif 'model:' in line.lower():
+                    model_info = line.split(':')[1].strip()
+                    if current_disk:
+                        metrics['device_models'][current_disk] = model_info
+                elif 'capacity:' in line.lower():
+                    capacity_info = line.split(':')[1].strip()
+                    if current_disk:
+                        metrics['disk_capacities'][current_disk] = capacity_info
+                elif 'filesystem:' in line.lower() or 'fstype:' in line.lower():
+                    fs_info = line.split(':')[1].strip()
+                    if current_disk:
+                        metrics['filesystem_types'][current_disk] = fs_info
+                # Handle the format from the AI response (e.g., "SMART Health Status: FAILED")
+                elif 'smart health status' in line.lower() and ':' in line:
+                    parts = line.split(':')
+                    if len(parts) >= 2:
+                        status = parts[1].strip()
+                        # Try to find the disk from context or use a generic name
+                        if current_disk:
+                            metrics['smart_status'][current_disk] = status
+                        else:
+                            # Look for disk identifier in the line or previous lines
+                            for prev_line in lines[max(0, lines.index(line)-5):lines.index(line)]:
+                                if '/dev/' in prev_line:
+                                    disk_match = re.search(r'/dev/[^,\s]+', prev_line)
+                                    if disk_match:
+                                        current_disk = disk_match.group(0)
+                                        metrics['smart_status'][current_disk] = status
+                                        break
+                # Enhanced disk identification from AI response format
+                elif '/dev/' in line and ('DISK' in line or 'Device' in line):
+                    disk_match = re.search(r'/dev/[^,\s]+', line)
+                    if disk_match:
+                        current_disk = disk_match.group(0)
+                        # Also extract model and capacity if mentioned in the same line
+                        if 'Model:' in line:
+                            model_match = re.search(r'Model:\s*([^,\n]+)', line)
+                            if model_match:
+                                metrics['device_models'][current_disk] = model_match.group(1).strip()
+                        if 'Capacity:' in line:
+                            capacity_match = re.search(r'Capacity:\s*([^,\n]+)', line)
+                            if capacity_match:
+                                metrics['disk_capacities'][current_disk] = capacity_match.group(1).strip()
 
         return metrics
 

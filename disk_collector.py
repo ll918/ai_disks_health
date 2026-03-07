@@ -33,17 +33,26 @@ class DiskHealthCollector:
 
             # Get all disk devices
             self.disks = self._get_disk_devices()
+            print(f"✅ Found {len(self.disks)} disk devices: {', '.join(self.disks)}")
 
             # Collect data for each disk
             disk_data = []
             for disk in self.disks:
                 try:
+                    print(f"📊 Collecting data for {disk}...")
                     disk_info = self._collect_disk_data(disk)
                     if disk_info:
                         disk_data.append(disk_info)
+                        print(f"✅ Successfully collected data for {disk}")
+                    else:
+                        print(f"⚠️  No data collected for {disk}")
                 except Exception as e:
                     print(f"⚠️  Warning: Could not collect data for disk {disk}: {e}")
                     continue
+
+            # Validate that we have unique data for each disk
+            if disk_data:
+                self._validate_disk_data_uniqueness(disk_data)
 
             return {
                 'timestamp': datetime.now().isoformat(),
@@ -79,12 +88,18 @@ class DiskHealthCollector:
             if partition.device.startswith(('/dev/sd', '/dev/nvme', '/dev/hd', '/dev/vd')):
                 # Extract base device name (remove partition number)
                 device = partition.device
-                if device.endswith(('p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8', 'p9')):
-                    device = device[:-2]  # Remove partition number for NVMe (e.g., nvme0n1p1 -> nvme0n1)
-                elif device[-1].isdigit() and not device[-2:].isdigit():
-                    device = device[:-1]  # Remove single digit partition number (e.g., sda1 -> sda)
-                elif device[-2:].isdigit():
-                    device = device[:-2]  # Remove two digit partition number (e.g., sda10 -> sda)
+
+                # Handle NVMe devices (e.g., /dev/nvme0n1p1 -> /dev/nvme0n1)
+                if 'nvme' in device:
+                    # For NVMe, remove the partition number (p1, p2, etc.)
+                    if 'p' in device:
+                        device = device.split('p')[0]
+
+                # Handle traditional devices (e.g., /dev/sda1 -> /dev/sda)
+                else:
+                    # Remove trailing digits to get base device name
+                    while device and device[-1].isdigit():
+                        device = device[:-1]
 
                 if device not in disks:
                     disks.append(device)
@@ -99,10 +114,18 @@ class DiskHealthCollector:
                         parts = line.split()
                         if len(parts) >= 2 and parts[1] == 'disk':
                             device_name = f"/dev/{parts[0]}"
+                            # Ensure we get the base device name
+                            if 'nvme' in device_name and 'p' in device_name:
+                                device_name = device_name.split('p')[0]
+                            elif not 'nvme' in device_name:
+                                # Remove trailing digits for traditional devices
+                                while device_name and device_name[-1].isdigit():
+                                    device_name = device_name[:-1]
+
                             if device_name not in disks:
                                 disks.append(device_name)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Warning: Could not get additional devices from lsblk: {e}")
 
         return sorted(list(set(disks)))
 
@@ -169,8 +192,8 @@ class DiskHealthCollector:
                 else:
                     # Health check failed, but we can still get other SMART data
                     health_status = 'UNKNOWN'
-            except Exception:
-                # Health check failed, but we can still get other SMART data
+            except Exception as e:
+                print(f"Warning: Could not get SMART health for {device}: {e}")
                 health_status = 'UNKNOWN'
 
             # Get detailed SMART attributes
@@ -186,15 +209,18 @@ class DiskHealthCollector:
                                     attr_id = parts[0]
                                     attr_name = parts[1]
                                     raw_value = parts[-1]
+                                    normalized = parts[3] if len(parts) > 3 else 'N/A'
                                     attributes[attr_name] = {
                                         'id': attr_id,
                                         'raw_value': raw_value,
-                                        'normalized': parts[3] if len(parts) > 3 else 'N/A'
+                                        'normalized': normalized
                                     }
                                 except IndexError:
                                     continue
-            except Exception:
-                pass
+                else:
+                    print(f"Warning: Could not get SMART attributes for {device}: {result.stderr}")
+            except Exception as e:
+                print(f"Warning: Exception getting SMART attributes for {device}: {e}")
 
             # Get device information
             try:
@@ -205,8 +231,10 @@ class DiskHealthCollector:
                         if ':' in line:
                             key, value = line.split(':', 1)
                             device_info[key.strip()] = value.strip()
-            except Exception:
-                pass
+                else:
+                    print(f"Warning: Could not get device info for {device}: {result.stderr}")
+            except Exception as e:
+                print(f"Warning: Exception getting device info for {device}: {e}")
 
             return {
                 'health_status': health_status,
@@ -216,7 +244,7 @@ class DiskHealthCollector:
             }
 
         except Exception as e:
-            return {'error': f'SMART data collection failed: {str(e)}'}
+            return {'error': f'SMART data collection failed for {device}: {str(e)}'}
 
     def _get_usage_data(self, device: str) -> Dict[str, Any]:
         """Get disk usage information."""
@@ -226,7 +254,9 @@ class DiskHealthCollector:
             usage_data = {}
 
             for partition in partitions:
-                if partition.device.startswith(device):
+                # Check if this partition belongs to our device
+                partition_device = partition.device
+                if partition_device.startswith(device):
                     try:
                         usage = psutil.disk_usage(partition.mountpoint)
                         usage_data[partition.mountpoint] = {
@@ -235,9 +265,13 @@ class DiskHealthCollector:
                             'free': usage.free,
                             'percent': (usage.used / usage.total) * 100 if usage.total > 0 else 0,
                             'fstype': partition.fstype,
-                            'mountpoint': partition.mountpoint
+                            'mountpoint': partition.mountpoint,
+                            'device': partition_device
                         }
                     except PermissionError:
+                        continue
+                    except Exception as e:
+                        print(f"Warning: Could not get usage for {partition.mountpoint}: {e}")
                         continue
 
             # Check for unmounted partitions on this device using lsblk
@@ -276,26 +310,30 @@ class DiskHealthCollector:
                                         'mountpoint': 'Not mounted',
                                         'status': 'unmounted'
                                     }
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Warning: Could not get unmounted partitions for {device}: {e}")
 
             # Get disk I/O counters
-            io_counters = psutil.disk_io_counters(perdisk=True)
-            if device.replace('/dev/', '') in io_counters:
-                counter = io_counters[device.replace('/dev/', '')]
-                usage_data['io_counters'] = {
-                    'read_count': counter.read_count,
-                    'write_count': counter.write_count,
-                    'read_bytes': counter.read_bytes,
-                    'write_bytes': counter.write_bytes,
-                    'read_time': counter.read_time,
-                    'write_time': counter.write_time
-                }
+            try:
+                io_counters = psutil.disk_io_counters(perdisk=True)
+                device_name = device.replace('/dev/', '')
+                if device_name in io_counters:
+                    counter = io_counters[device_name]
+                    usage_data['io_counters'] = {
+                        'read_count': counter.read_count,
+                        'write_count': counter.write_count,
+                        'read_bytes': counter.read_bytes,
+                        'write_bytes': counter.write_bytes,
+                        'read_time': counter.read_time,
+                        'write_time': counter.write_time
+                    }
+            except Exception as e:
+                print(f"Warning: Could not get I/O counters for {device}: {e}")
 
             return usage_data
 
         except Exception as e:
-            return {'error': f'Usage data collection failed: {str(e)}'}
+            return {'error': f'Usage data collection failed for {device}: {str(e)}'}
 
     def _get_io_stats(self, device: str) -> Dict[str, Any]:
         """Get I/O statistics for the disk."""
@@ -334,20 +372,42 @@ class DiskHealthCollector:
                         parts = line.split()
                         if len(parts) >= 10:
                             try:
-                                return float(parts[-1])
-                            except ValueError:
+                                temp_str = parts[-1]
+                                # Handle cases where temperature might be in hex or have extra characters
+                                if temp_str.startswith('0x'):
+                                    # Convert hex to decimal
+                                    temp_value = int(temp_str, 16)
+                                else:
+                                    # Try to extract just the number
+                                    temp_clean = re.sub(r'[^\d.-]', '', temp_str)
+                                    if temp_clean:
+                                        temp_value = float(temp_clean)
+                                    else:
+                                        continue
+
+                                # Validate temperature range (reasonable disk temps are usually 0-80°C)
+                                if 0 <= temp_value <= 100:
+                                    return temp_value
+                            except (ValueError, IndexError):
                                 continue
 
             # Try hddtemp if available
-            result = subprocess.run(['hddtemp', device],
-                                  capture_output=True, text=True, timeout=10)
-            if result.returncode == 0:
-                match = re.search(r'(\d+)\s*°C', result.stdout)
-                if match:
-                    return float(match.group(1))
+            try:
+                result = subprocess.run(['hddtemp', device],
+                                      capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    # Parse hddtemp output format: "/dev/sda: KINGSTON SA400S37960G: 35°C"
+                    match = re.search(r':\s*(\d+)\s*°C', result.stdout)
+                    if match:
+                        temp_value = float(match.group(1))
+                        if 0 <= temp_value <= 100:
+                            return temp_value
+            except Exception:
+                pass
 
             return None
-        except Exception:
+        except Exception as e:
+            print(f"Warning: Could not get temperature for {device}: {e}")
             return None
 
     def _assess_smart_health(self, smart_data: Dict[str, Any]) -> str:
@@ -405,6 +465,55 @@ class DiskHealthCollector:
             summary['status'] = 'GOOD'
 
         return summary
+
+    def _validate_disk_data_uniqueness(self, disk_data: List[Dict[str, Any]]) -> None:
+        """Validate that each disk has unique data to detect collection issues."""
+        if len(disk_data) <= 1:
+            return
+
+        print("🔍 Validating disk data uniqueness...")
+
+        # Check for duplicate temperatures
+        temperatures = {}
+        for disk in disk_data:
+            temp = disk.get('temperature')
+            if temp is not None:
+                if temp in temperatures:
+                    print(f"⚠️  Warning: Same temperature ({temp}°C) found for {disk['device']} and {temperatures[temp]}")
+                else:
+                    temperatures[temp] = disk['device']
+
+        # Check for duplicate SMART data patterns
+        smart_signatures = {}
+        for disk in disk_data:
+            smart_data = disk.get('smart_data', {})
+            if smart_data and 'device_info' in smart_data:
+                device_info = smart_data['device_info']
+                model = device_info.get('Device Model', '')
+                serial = device_info.get('Serial Number', '')
+                signature = f"{model}_{serial}"
+
+                if signature in smart_signatures and signature != '_':
+                    print(f"⚠️  Warning: Similar device info found for {disk['device']} and {smart_signatures[signature]}")
+                else:
+                    smart_signatures[signature] = disk['device']
+
+        # Check for duplicate usage patterns (this is less critical but helpful)
+        usage_signatures = {}
+        for disk in disk_data:
+            usage_data = disk.get('usage_data', {})
+            if usage_data:
+                # Create a signature based on usage patterns
+                total_usage = sum(usage.get('percent', 0) for mount, usage in usage_data.items()
+                                if isinstance(usage, dict) and 'percent' in usage)
+                signature = f"{len(usage_data)}_partitions_{total_usage:.1f}%"
+
+                if signature in usage_signatures:
+                    print(f"⚠️  Warning: Similar usage pattern found for {disk['device']} and {usage_signatures[signature]}")
+                else:
+                    usage_signatures[signature] = disk['device']
+
+        print("✅ Disk data uniqueness validation completed")
 
 
 def main():

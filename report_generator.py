@@ -84,14 +84,22 @@ class ReportGenerator:
         return "\n".join(header_lines)
 
     def _convert_to_local_time(self, timestamp: str) -> str:
-        """Convert UTC timestamp to local time (America/Toronto)."""
+        """Convert timestamp to local time (America/Toronto)."""
         try:
             # Parse the timestamp string
             if isinstance(timestamp, str):
                 # Handle different timestamp formats
                 if 'T' in timestamp:
-                    # ISO format: 2024-01-01T12:00:00
-                    dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                    # ISO format: 2024-01-01T12:00:00 or 2024-01-01T12:00:00Z or 2024-01-01T12:00:00+00:00
+                    if timestamp.endswith('Z'):
+                        # UTC timestamp with 'Z' suffix
+                        dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                    elif '+' in timestamp or timestamp.count(':') > 1:
+                        # Timestamp with timezone offset
+                        dt = datetime.fromisoformat(timestamp)
+                    else:
+                        # Naive timestamp (no timezone info) - assume it's already local time
+                        dt = datetime.fromisoformat(timestamp)
                 else:
                     # Try other common formats
                     dt = datetime.fromisoformat(timestamp)
@@ -100,15 +108,17 @@ class ReportGenerator:
 
             # Convert to local timezone (America/Toronto)
             local_tz = pytz.timezone('America/Toronto')
-            if dt.tzinfo is None:
-                # If no timezone info, assume naive datetime is UTC
-                utc_tz = pytz.UTC
-                dt = utc_tz.localize(dt)
 
-            local_time = dt.astimezone(local_tz)
+            if dt.tzinfo is None:
+                # If no timezone info, assume it's already local time (not UTC)
+                # Just localize it to the local timezone for consistent formatting
+                dt = local_tz.localize(dt)
+            else:
+                # If timezone info exists, convert to local time
+                dt = dt.astimezone(local_tz)
 
             # Format with timezone info
-            return local_time.strftime("%Y-%m-%d %H:%M:%S %Z")
+            return dt.strftime("%Y-%m-%d %H:%M:%S %Z")
 
         except Exception:
             # If conversion fails, return original timestamp

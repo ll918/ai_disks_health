@@ -254,6 +254,83 @@ Do not add additional sections or modify the structure."""
             }
         }
 
+        # Enhance technical metrics with device information from original data
+        if 'technical_metrics' not in report:
+            report['technical_metrics'] = {}
+
+        technical_metrics = report['technical_metrics']
+
+        # Extract device information from original disk data
+        if 'disks' in original_data:
+            for disk in original_data['disks']:
+                device = disk.get('device', 'Unknown')
+
+                # Extract model from SMART data
+                smart_data = disk.get('smart_data', {})
+                if smart_data and 'device_info' in smart_data:
+                    device_info = smart_data['device_info']
+                    model = device_info.get('Device Model', 'Unknown')
+                    if model != 'Unknown' and device not in technical_metrics.get('device_models', {}):
+                        if 'device_models' not in technical_metrics:
+                            technical_metrics['device_models'] = {}
+                        technical_metrics['device_models'][device] = model
+
+                # Extract capacity from SMART data
+                if smart_data and 'device_info' in smart_data:
+                    device_info = smart_data['device_info']
+                    capacity = device_info.get('User Capacity', 'Unknown')
+                    if capacity != 'Unknown' and device not in technical_metrics.get('disk_capacities', {}):
+                        if 'disk_capacities' not in technical_metrics:
+                            technical_metrics['disk_capacities'] = {}
+                        # Extract numeric value from capacity string for better formatting
+                        import re
+                        capacity_match = re.search(r'(\d+(?:,\d{3})*(?:\.\d+)?)\s*(bytes|B|KB|MB|GB|TB)', capacity, re.IGNORECASE)
+                        if capacity_match:
+                            # Convert to bytes for consistent formatting
+                            value = float(capacity_match.group(1).replace(',', ''))
+                            unit = capacity_match.group(2).upper()
+
+                            # Convert to bytes
+                            if unit == 'TB':
+                                bytes_value = int(value * 1024**4)
+                            elif unit == 'GB':
+                                bytes_value = int(value * 1024**3)
+                            elif unit == 'MB':
+                                bytes_value = int(value * 1024**2)
+                            elif unit == 'KB':
+                                bytes_value = int(value * 1024)
+                            else:  # bytes or B
+                                bytes_value = int(value)
+
+                            technical_metrics['disk_capacities'][device] = bytes_value
+                        else:
+                            technical_metrics['disk_capacities'][device] = capacity
+
+                # Extract filesystem types from usage data
+                usage_data = disk.get('usage_data', {})
+                if usage_data:
+                    for mount, data in usage_data.items():
+                        if isinstance(data, dict) and 'fstype' in data:
+                            fstype = data['fstype']
+                            if fstype != 'Unknown' and device not in technical_metrics.get('filesystem_types', {}):
+                                if 'filesystem_types' not in technical_metrics:
+                                    technical_metrics['filesystem_types'] = {}
+                                technical_metrics['filesystem_types'][device] = fstype
+
+                # Extract temperature
+                temperature = disk.get('temperature')
+                if temperature is not None and device not in technical_metrics.get('temperature_analysis', {}):
+                    if 'temperature_analysis' not in technical_metrics:
+                        technical_metrics['temperature_analysis'] = {}
+                    technical_metrics['temperature_analysis'][device] = f"{temperature}°C"
+
+                # Extract SMART status
+                health_status = disk.get('health_status', 'Unknown')
+                if health_status != 'Unknown' and device not in technical_metrics.get('smart_status', {}):
+                    if 'smart_status' not in technical_metrics:
+                        technical_metrics['smart_status'] = {}
+                    technical_metrics['smart_status'][device] = health_status
+
         return report
 
     def _extract_summary(self, response: str) -> Dict[str, Any]:

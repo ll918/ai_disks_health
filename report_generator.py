@@ -19,6 +19,46 @@ class ReportGenerator:
     def __init__(self):
         self.colors = self._get_color_codes()
 
+    def _bytes_to_human_readable(self, bytes_value: int) -> str:
+        """
+        Convert bytes to human-readable format (GB, TB, etc.).
+
+        Args:
+            bytes_value (int): Size in bytes
+
+        Returns:
+            str: Human-readable size string
+        """
+        if bytes_value is None or bytes_value == 0:
+            return "0 B"
+
+        # Handle string input that might contain bytes
+        if isinstance(bytes_value, str):
+            # Try to extract numeric value from strings like "1,000,204,886,016 bytes"
+            import re
+            numeric_match = re.search(r'(\d{1,3}(?:,\d{3})*)', bytes_value.replace(',', ''))
+            if numeric_match:
+                try:
+                    bytes_value = int(numeric_match.group(1).replace(',', ''))
+                except ValueError:
+                    return bytes_value  # Return original string if conversion fails
+            else:
+                return bytes_value  # Return original string if no numeric value found
+
+        # Convert to integer if it's a float
+        bytes_value = int(bytes_value)
+
+        if bytes_value >= 1024**4:  # TB
+            return f"{bytes_value / (1024**4):.2f} TB"
+        elif bytes_value >= 1024**3:  # GB
+            return f"{bytes_value / (1024**3):.2f} GB"
+        elif bytes_value >= 1024**2:  # MB
+            return f"{bytes_value / (1024**2):.2f} MB"
+        elif bytes_value >= 1024:  # KB
+            return f"{bytes_value / 1024:.2f} KB"
+        else:  # Bytes
+            return f"{bytes_value} B"
+
     def generate_report(self, analysis_data: Dict[str, Any], verbose: bool = False) -> str:
         """
         Generate a formatted report from analysis data.
@@ -177,25 +217,40 @@ class ReportGenerator:
 
         # If we have device info from technical metrics, use it
         if smart_status:
-            for device, status in smart_status.items():
+            # Create a unified device information structure
+            all_devices = set(smart_status.keys())
+            all_devices.update(temperature_analysis.keys())
+            all_devices.update(device_models.keys())
+            all_devices.update(disk_capacities.keys())
+            all_devices.update(filesystem_types.keys())
+
+            # Sort devices for consistent output
+            sorted_devices = sorted(all_devices)
+
+            for device in sorted_devices:
                 config_lines.append(f"Device: {device}")
-                config_lines.append(f"  SMART Status: {status}")
+
+                # Add SMART Status
+                if device in smart_status:
+                    config_lines.append(f"  SMART Status: {smart_status[device]}")
 
                 # Add device model if available
                 if device in device_models and device_models[device] != 'Unknown':
                     config_lines.append(f"  Model: {device_models[device]}")
 
-                # Add disk capacity if available
+                # Add disk capacity if available (convert to human-readable format)
                 if device in disk_capacities and disk_capacities[device] != 'Unknown':
-                    config_lines.append(f"  Capacity: {disk_capacities[device]}")
-
-                # Add filesystem type if available
-                if device in filesystem_types and filesystem_types[device] != 'Unknown':
-                    config_lines.append(f"  Filesystem: {filesystem_types[device]}")
+                    # Try to convert capacity to human-readable format
+                    human_readable_capacity = self._bytes_to_human_readable(disk_capacities[device])
+                    config_lines.append(f"  Capacity: {human_readable_capacity}")
 
                 # Add temperature if available
                 if device in temperature_analysis:
                     config_lines.append(f"  Temperature: {temperature_analysis[device]}")
+
+                # Add filesystem type if available
+                if device in filesystem_types and filesystem_types[device] != 'Unknown':
+                    config_lines.append(f"  Filesystem: {filesystem_types[device]}")
 
                 config_lines.append("")
         else:

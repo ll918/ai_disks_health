@@ -322,7 +322,9 @@ Do not add additional sections or modify the structure."""
                 if temperature is not None and device not in technical_metrics.get('temperature_analysis', {}):
                     if 'temperature_analysis' not in technical_metrics:
                         technical_metrics['temperature_analysis'] = {}
-                    technical_metrics['temperature_analysis'][device] = f"{temperature}°C"
+                    # Format temperature with proper units and status
+                    temp_status = "Normal" if 0 <= temperature <= 50 else "Elevated" if 51 <= temperature <= 70 else "Critical"
+                    technical_metrics['temperature_analysis'][device] = f"{temperature}°C - {temp_status}"
 
                 # Extract SMART status
                 health_status = disk.get('health_status', 'Unknown')

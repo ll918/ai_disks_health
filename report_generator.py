@@ -232,7 +232,12 @@ class ReportGenerator:
 
                 # Add SMART Status
                 if device in smart_status:
-                    config_lines.append(f"  SMART Status: {smart_status[device]}")
+                    # Clean up SMART status to remove any trailing text
+                    smart_status_clean = smart_status[device]
+                    if "The disks are currently operating within acceptable parameters" in smart_status_clean:
+                        # Extract just the status part
+                        smart_status_clean = smart_status_clean.replace(" - The disks are currently operating within acceptable parameters", "")
+                    config_lines.append(f"  SMART Status: {smart_status_clean}")
 
                 # Add device model if available
                 if device in device_models and device_models[device] != 'Unknown':
@@ -246,13 +251,20 @@ class ReportGenerator:
 
                 # Add temperature if available
                 if device in temperature_analysis:
-                    config_lines.append(f"  Temperature: {temperature_analysis[device]}")
+                    temp_info = temperature_analysis[device]
+                    # Clean up temperature info to remove any trailing text
+                    if "The disks are currently operating within acceptable parameters" in temp_info:
+                        temp_info = temp_info.replace(" - The disks are currently operating within acceptable parameters", "")
+                    config_lines.append(f"  Temperature: {temp_info}")
 
                 # Add filesystem type if available
                 if device in filesystem_types and filesystem_types[device] != 'Unknown':
                     config_lines.append(f"  Filesystem: {filesystem_types[device]}")
 
                 config_lines.append("")
+
+            # Add summary text at the end of the section
+            config_lines.append("The disks are currently operating within acceptable parameters.")
         else:
             # Enhanced fallback: Try to extract device info from the AI analysis text
             analysis_text = analysis_data.get('analysis', '')

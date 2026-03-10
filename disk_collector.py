@@ -557,51 +557,160 @@ class DiskHealthCollector:
     def _get_temperature(self, device: str) -> Optional[float]:
         """Get disk temperature if available."""
         try:
-            # Try smartctl temperature
-            result = subprocess.run(['smartctl', '-A', device],
-                                  capture_output=True, text=True, timeout=30)
-            if result.returncode == 0:
-                for line in result.stdout.split('\n'):
-                    if 'Temperature_Celsius' in line or 'Airflow_Temperature_Cel' in line:
-                        parts = line.split()
-                        if len(parts) >= 10:
-                            try:
-                                temp_str = parts[-1]
-                                # Handle cases where temperature might be in hex or have extra characters
-                                if temp_str.startswith('0x'):
-                                    # Convert hex to decimal
-                                    temp_value = int(temp_str, 16)
-                                else:
-                                    # Try to extract just the number
-                                    temp_clean = re.sub(r'[^\d.-]', '', temp_str)
-                                    if temp_clean:
-                                        temp_value = float(temp_clean)
-                                    else:
-                                        continue
+            print(f"🔍 Attempting to get temperature for {device}...")
 
-                                # Validate temperature range (reasonable disk temps are usually 0-80°C)
-                                if 0 <= temp_value <= 100:
-                                    return temp_value
-                            except (ValueError, IndexError):
-                                continue
+            # Try smartctl temperature with sudo
+            smartctl_commands = [
+                ['sudo', 'smartctl', '-A', device],  # Try with sudo first
+                ['smartctl', '-A', device]  # Fallback without sudo
+            ]
+
+            for cmd in smartctl_commands:
+                try:
+                    print(f"  Running: {' '.join(cmd)}")
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                    if result.returncode == 0:
+                        print(f"  ✅ smartctl succeeded for {device}")
+                        for line in result.stdout.split('\n'):
+                            # Handle both traditional and NVMe temperature attributes
+                            if ('Temperature_Celsius' in line or 'Airflow_Temperature_Cel' in line or
+                                'Temperature_Sensor' in line or 'Temperature Sensor' in line or
+                                'Temperature' in line):
+
+                                print(f"  📊 Found temperature line: {line.strip()}")
+                                parts = line.split()
+                                if len(parts) >= 10:
+                                    try:
+                                        # For SMART temperature lines, the temperature is in the Raw Value field
+                                        # Format: ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE
+                                        # Example: 194 Temperature_Celsius     0x0022   035   045   000    Old_age   Always       -       35 (Min/Max 21/45)
+                                        # The temperature is the first number in the RAW_VALUE field
+
+                                        # The RAW_VALUE is typically the last field, but we need to extract the first number from it
+                                        raw_value_field = parts[-1]
+                                        print(f"  🔢 Raw value field: {raw_value_field}")
+
+                                        # Extract the first number from the raw value field
+                                        # This handles formats like: "35", "35 (Min/Max 21/45)", "37 (0 22 0 0 0)", etc.
+                                        temp_match = re.search(r'^(\d+)', raw_value_field)
+                                        if temp_match:
+                                            temp_value = float(temp_match.group(1))
+                                            print(f"  📐 Extracted temperature: {raw_value_field} -> {temp_value}°C")
+
+                                            # Validate temperature range (disks typically operate between 10-60°C)
+                                            # 0°C is impossible for an operating disk, so we should be more strict
+                                            if 10 <= temp_value <= 80:
+                                                print(f"  ✅ Valid temperature found: {temp_value}°C")
+                                                return temp_value
+                                            elif temp_value == 0:
+                                                print(f"  ⚠️  Impossible temperature detected: {temp_value}°C (likely parsing error)")
+                                                # Try to extract a different number from the line
+                                                # Sometimes the temperature might be in a different position
+                                                all_numbers = re.findall(r'\b(\d{2,3})\b', line)
+                                                for num_str in all_numbers:
+                                                    potential_temp = float(num_str)
+                                                    if 10 <= potential_temp <= 80:
+                                                        print(f"  🔧 Found better temperature candidate: {potential_temp}°C")
+                                                        return potential_temp
+                                            else:
+                                                print(f"  ⚠️  Temperature out of reasonable range: {temp_value}°C")
+                                        else:
+                                            print(f"  ⚠️  Could not extract temperature from: {raw_value_field}")
+
+                                    except (ValueError, IndexError) as e:
+                                        print(f"  ⚠️  Error parsing temperature: {e}")
+                                        continue
+                                else:
+                                    # Handle NVMe temperature lines which have different format
+                                    # NVMe format: "Temperature:                        52 Celsius"
+                                    # or "Temperature Sensor 1:               52 Celsius"
+                                    try:
+                                        # Look for temperature value in the line for NVMe format
+                                        # Pattern: Temperature: [spaces] [number] Celsius
+                                        nvme_temp_match = re.search(r'Temperature:\s*(\d+)\s*Celsius', line, re.IGNORECASE)
+                                        if nvme_temp_match:
+                                            temp_value = float(nvme_temp_match.group(1))
+                                            print(f"  📐 NVMe temperature extracted: {temp_value}°C")
+
+                                            # Validate temperature range
+                                            if 10 <= temp_value <= 80:
+                                                print(f"  ✅ Valid NVMe temperature found: {temp_value}°C")
+                                                return temp_value
+                                            else:
+                                                print(f"  ⚠️  NVMe temperature out of range: {temp_value}°C")
+                                        else:
+                                            # Try Temperature Sensor pattern
+                                            sensor_temp_match = re.search(r'Temperature Sensor\s*\d*:\s*(\d+)\s*Celsius', line, re.IGNORECASE)
+                                            if sensor_temp_match:
+                                                temp_value = float(sensor_temp_match.group(1))
+                                                print(f"  📐 NVMe sensor temperature extracted: {temp_value}°C")
+
+                                                # Validate temperature range
+                                                if 10 <= temp_value <= 80:
+                                                    print(f"  ✅ Valid NVMe sensor temperature found: {temp_value}°C")
+                                                    return temp_value
+                                                else:
+                                                    print(f"  ⚠️  NVMe sensor temperature out of range: {temp_value}°C")
+                                    except (ValueError, IndexError) as e:
+                                        print(f"  ⚠️  Error parsing NVMe temperature: {e}")
+                    else:
+                        print(f"  ❌ smartctl failed with return code {result.returncode}")
+                        if result.stderr:
+                            print(f"  📝 stderr: {result.stderr}")
+                except Exception as e:
+                    print(f"  ⚠️  Exception running smartctl: {e}")
+                    continue
 
             # Try hddtemp if available
             try:
+                print(f"  🔍 Trying hddtemp for {device}...")
                 result = subprocess.run(['hddtemp', device],
                                       capture_output=True, text=True, timeout=10)
                 if result.returncode == 0:
+                    print(f"  ✅ hddtemp succeeded for {device}")
                     # Parse hddtemp output format: "/dev/sda: KINGSTON SA400S37960G: 35°C"
                     match = re.search(r':\s*(\d+)\s*°C', result.stdout)
                     if match:
                         temp_value = float(match.group(1))
+                        print(f"  🌡️  hddtemp temperature: {temp_value}°C")
                         if 0 <= temp_value <= 100:
                             return temp_value
-            except Exception:
-                pass
+                    else:
+                        print(f"  ⚠️  Could not parse hddtemp output: {result.stdout}")
+                else:
+                    print(f"  ❌ hddtemp failed with return code {result.returncode}")
+            except Exception as e:
+                print(f"  ⚠️  Exception running hddtemp: {e}")
 
+            # Try lsblk for temperature (some systems include it)
+            try:
+                print(f"  🔍 Trying lsblk for {device}...")
+                result = subprocess.run(['lsblk', '-d', '-n', '-o', 'NAME,TEMP', device],
+                                      capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    print(f"  ✅ lsblk succeeded for {device}")
+                    for line in result.stdout.split('\n'):
+                        if line.strip():
+                            parts = line.split()
+                            if len(parts) >= 2:
+                                temp_str = parts[-1]
+                                try:
+                                    temp_value = float(temp_str)
+                                    print(f"  🌡️  lsblk temperature: {temp_value}°C")
+                                    if 0 <= temp_value <= 100:
+                                        return temp_value
+                                except ValueError:
+                                    continue
+                else:
+                    print(f"  ❌ lsblk failed with return code {result.returncode}")
+            except Exception as e:
+                print(f"  ⚠️  Exception running lsblk: {e}")
+
+            print(f"  ❌ No temperature data found for {device}")
             return None
+
         except Exception as e:
-            print(f"Warning: Could not get temperature for {device}: {e}")
+            print(f"❌ Critical error getting temperature for {device}: {e}")
             return None
 
     def _assess_smart_health(self, smart_data: Dict[str, Any]) -> str:

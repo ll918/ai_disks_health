@@ -9,7 +9,7 @@ text format with clear sections and actionable information.
 import json
 import pytz
 import re
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from datetime import datetime
 
 
@@ -199,7 +199,7 @@ class ReportGenerator:
         return "\n".join(summary_lines)
 
     def _generate_storage_configuration(self, analysis_data: Dict[str, Any]) -> str:
-        """Generate the storage configuration section."""
+        """Generate the storage configuration section with enhanced temperature display."""
         config_lines = []
         config_lines.append("💾 STORAGE CONFIGURATION")
         config_lines.append("-" * 40)
@@ -250,13 +250,29 @@ class ReportGenerator:
                         smart_status_clean = smart_status_clean.replace(" - The disks are currently operating within acceptable parameters", "")
                     config_lines.append(f"  SMART Status: {smart_status_clean}")
 
-                # Add temperature if available
+                # Add enhanced temperature information
                 if device in temperature_analysis:
                     temp_info = temperature_analysis[device]
                     # Clean up temperature info to remove any trailing text
                     if "The disks are currently operating within acceptable parameters" in temp_info:
                         temp_info = temp_info.replace(" - The disks are currently operating within acceptable parameters", "")
-                    config_lines.append(f"  Temperature: {temp_info}")
+
+                    # Parse temperature value and status for enhanced display
+                    temp_value, temp_status = self._parse_temperature_info(temp_info)
+
+                    if temp_value is not None:
+                        # Add temperature with status indicator
+                        temp_color = self._get_temperature_color(temp_status)
+                        config_lines.append(f"  Temperature: {temp_color}{temp_value}°C - {temp_status}{self.colors['reset']}")
+
+                        # Add temperature context and recommendations
+                        temp_recommendations = self._get_temperature_recommendations(temp_value, temp_status)
+                        if temp_recommendations:
+                            config_lines.append(f"    {temp_recommendations}")
+                    else:
+                        config_lines.append(f"  Temperature: {temp_info}")
+                else:
+                    config_lines.append(f"  Temperature: Not available")
 
                 # Add filesystem type if available
                 if device in filesystem_types and filesystem_types[device] != 'Unknown':
@@ -271,6 +287,9 @@ class ReportGenerator:
                         config_lines.append(f"  Mount Points: {', '.join(mounting_points_list)}")
 
                 config_lines.append("")
+
+            # Add temperature-focused summary
+            config_lines.extend(self._generate_temperature_summary(temperature_analysis, smart_status))
 
             # Add appropriate summary text based on the actual health status
             critical_count = sum(1 for status in smart_status.values() if 'CRITICAL' in status.upper() or 'FAILED' in status.upper())
@@ -472,6 +491,184 @@ class ReportGenerator:
             return self.colors['red']
         else:
             return self.colors['white']
+
+    def _parse_temperature_info(self, temp_info: str) -> tuple[Optional[float], str]:
+        """
+        Parse temperature information to extract value and status.
+
+        Args:
+            temp_info (str): Temperature information string
+
+        Returns:
+            tuple: (temperature_value, status)
+        """
+        if not temp_info:
+            return None, 'Unknown'
+
+        # Try to extract temperature value
+        temp_match = re.search(r'(\d+\.?\d*)\s*°?C', temp_info, re.IGNORECASE)
+        if temp_match:
+            try:
+                temp_value = float(temp_match.group(1))
+                return temp_value, self._classify_temperature(temp_value)
+            except ValueError:
+                pass
+
+        # Try to extract just the number if no degree symbol
+        temp_match = re.search(r'(\d+\.?\d*)', temp_info)
+        if temp_match:
+            try:
+                temp_value = float(temp_match.group(1))
+                return temp_value, self._classify_temperature(temp_value)
+            except ValueError:
+                pass
+
+        # If we can't extract a numeric value, try to extract status from text
+        temp_info_lower = temp_info.lower()
+        if 'critical' in temp_info_lower:
+            return None, 'Critical'
+        elif 'elevated' in temp_info_lower or 'high' in temp_info_lower:
+            return None, 'Elevated'
+        elif 'normal' in temp_info_lower:
+            return None, 'Normal'
+        else:
+            return None, 'Unknown'
+
+    def _classify_temperature(self, temp_value: float) -> str:
+        """
+        Classify temperature based on value.
+
+        Args:
+            temp_value (float): Temperature in Celsius
+
+        Returns:
+            str: Temperature status classification
+        """
+        if temp_value <= 45:
+            return 'Normal'
+        elif temp_value <= 60:
+            return 'Elevated'
+        else:
+            return 'Critical'
+
+    def _get_temperature_color(self, temp_status: str) -> str:
+        """
+        Get color code for temperature status.
+
+        Args:
+            temp_status (str): Temperature status
+
+        Returns:
+            str: ANSI color code
+        """
+        temp_status_lower = temp_status.lower()
+        if temp_status_lower == 'normal':
+            return self.colors['green']
+        elif temp_status_lower == 'elevated':
+            return self.colors['yellow']
+        elif temp_status_lower == 'critical':
+            return self.colors['red']
+        else:
+            return self.colors['white']
+
+    def _get_temperature_recommendations(self, temp_value: float, temp_status: str) -> str:
+        """
+        Get temperature-specific recommendations.
+
+        Args:
+            temp_value (float): Temperature value
+            temp_status (str): Temperature status
+
+        Returns:
+            str: Recommendations for the temperature condition
+        """
+        if temp_status == 'Critical':
+            return "⚠️  CRITICAL: Immediate cooling required - disk may fail soon"
+        elif temp_status == 'Elevated':
+            return "⚠️  WARNING: Monitor temperature and improve cooling"
+        elif temp_status == 'Normal':
+            return "✅ Temperature within safe operating range"
+        else:
+            return "Temperature status unclear - monitor closely"
+
+    def _generate_temperature_summary(self, temperature_analysis: Dict[str, str],
+                                    smart_status: Dict[str, str]) -> List[str]:
+        """
+        Generate a temperature-focused summary for the storage configuration.
+
+        Args:
+            temperature_analysis (Dict[str, str]): Temperature analysis data
+            smart_status (Dict[str, str]): SMART status data
+
+        Returns:
+            List[str]: Temperature summary lines
+        """
+        summary_lines = []
+        summary_lines.append("🌡️  TEMPERATURE ANALYSIS")
+        summary_lines.append("-" * 40)
+
+        if not temperature_analysis:
+            summary_lines.append("No temperature data available for analysis")
+            return summary_lines
+
+        # Count temperature statuses
+        normal_count = 0
+        elevated_count = 0
+        critical_count = 0
+        unknown_count = 0
+
+        for device, temp_info in temperature_analysis.items():
+            temp_value, temp_status = self._parse_temperature_info(temp_info)
+
+            if temp_status == 'Normal':
+                normal_count += 1
+            elif temp_status == 'Elevated':
+                elevated_count += 1
+            elif temp_status == 'Critical':
+                critical_count += 1
+            else:
+                unknown_count += 1
+
+        # Generate summary based on temperature distribution
+        total_monitored = len(temperature_analysis)
+        summary_lines.append(f"Disks with temperature monitoring: {total_monitored}")
+
+        if critical_count > 0:
+            summary_lines.append(f"⚠️  CRITICAL: {critical_count} disk(s) at critical temperature")
+            summary_lines.append("Immediate action required to prevent disk failure")
+        elif elevated_count > 0:
+            summary_lines.append(f"⚠️  WARNING: {elevated_count} disk(s) showing elevated temperatures")
+            summary_lines.append("Monitor closely and consider improving cooling")
+        else:
+            summary_lines.append(f"✅ All monitored disks operating at normal temperatures")
+
+        # Add specific device information
+        for device, temp_info in temperature_analysis.items():
+            temp_value, temp_status = self._parse_temperature_info(temp_info)
+            temp_color = self._get_temperature_color(temp_status)
+
+            if temp_value is not None:
+                summary_lines.append(f"  {device}: {temp_color}{temp_value}°C - {temp_status}{self.colors['reset']}")
+            else:
+                summary_lines.append(f"  {device}: {temp_status}")
+
+        # Add correlation with SMART status if available
+        if smart_status:
+            summary_lines.append("")
+            summary_lines.append("Correlation with SMART status:")
+            for device in temperature_analysis:
+                if device in smart_status:
+                    smart_status_clean = smart_status[device]
+                    if "The disks are currently operating within acceptable parameters" in smart_status_clean:
+                        smart_status_clean = smart_status_clean.replace(" - The disks are currently operating within acceptable parameters", "")
+
+                    temp_value, temp_status = self._parse_temperature_info(temperature_analysis[device])
+                    if temp_status == 'Critical' and smart_status_clean != 'PASSED':
+                        summary_lines.append(f"  {device}: Critical temperature may be affecting SMART health")
+                    elif temp_status == 'Elevated' and smart_status_clean == 'PASSED':
+                        summary_lines.append(f"  {device}: Elevated temperature but SMART status still good")
+
+        return summary_lines
 
     def save_report_to_file(self, report_text: str, filename: str | None = None) -> str | None:
         """

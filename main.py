@@ -155,8 +155,10 @@ Examples:
                        help='Save report to file')
     parser.add_argument('--json', '-j', action='store_true',
                        help='Output analysis in JSON format')
-    parser.add_argument('--model', '-m', default='gemma3:1b',
-                       help='Ollama model to use for analysis (default: gemma3:1b)')
+    # Get default model from environment variable or use fallback
+    default_model = os.getenv('OLLAMA_MODEL', 'gemma3:1b')
+    parser.add_argument('--model', '-m', default=default_model,
+                       help=f'Ollama model to use for analysis (default: {default_model})')
     parser.add_argument('--check-deps', action='store_true',
                        help='Check if required dependencies are available')
     parser.add_argument('--version', action='version', version='AI Disk Health Monitor v1.0.0')

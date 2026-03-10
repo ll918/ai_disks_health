@@ -22,11 +22,8 @@ class AIDiskAnalyzer:
         Initialize the AI analyzer.
 
         Args:
-            model (str): The Ollama model to use for analysis
+            model (str): The Ollama model to use for analysis. If "gemma3:1b", will read from OLLAMA_MODEL environment variable.
         """
-        self.model = model
-        self.client = None
-
         # Load environment variables for thresholds
         import os
         self.temperature_warning_threshold = int(os.getenv('TEMPERATURE_WARNING_THRESHOLD', '55'))
@@ -35,6 +32,23 @@ class AIDiskAnalyzer:
         self.capacity_critical_threshold = int(os.getenv('CAPACITY_CRITICAL_THRESHOLD', '90'))
         self.wear_level_warning_threshold = int(os.getenv('WEAR_LEVEL_WARNING_THRESHOLD', '80'))
         self.wear_level_critical_threshold = int(os.getenv('WEAR_LEVEL_CRITICAL_THRESHOLD', '95'))
+
+        # Determine model to use
+        if model == "gemma3:1b":  # Default value indicates we should check environment
+            # Try to get model from environment variable
+            env_model = os.getenv('OLLAMA_MODEL')
+            if env_model:
+                self.model = env_model
+                print(f"🤖 Using model from .env: {self.model}")
+            else:
+                # Fallback to default
+                self.model = "gemma3:1b"
+                print(f"🤖 Using default model: {self.model}")
+        else:
+            self.model = model
+            print(f"🤖 Using specified model: {self.model}")
+
+        self.client = None
 
     def analyze_disk_health(self, disk_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -99,6 +113,13 @@ class AIDiskAnalyzer:
         prompt = f"""You are an expert system administrator and disk health specialist.
 Analyze the following disk health data and provide a comprehensive diagnostic report.
 
+CRITICAL INSTRUCTIONS:
+1. ONLY USE DATA PROVIDED IN THE DISK HEALTH DATA SECTION BELOW
+2. DO NOT INVENT OR HALLUCINATE ANY TECHNICAL DETAILS
+3. IF DATA IS MISSING, STATE "DATA NOT AVAILABLE" - DO NOT MAKE UP VALUES
+4. CROSS-CHECK ALL CLAIMS AGAINST THE PROVIDED DATA
+5. QUOTE SPECIFIC VALUES FROM THE DATA WHEN MAKING ASSESSMENTS
+
 DISK HEALTH DATA:
 {formatted_data}
 
@@ -116,21 +137,21 @@ For each issue found, provide:
 - Issue Type: [SMART_ERROR/TEMPERATURE/CAPACITY/PERFORMANCE/UNKNOWN]
 - Severity: [CRITICAL/HIGH/MEDIUM/LOW]
 - Affected Component: [disk identifier or system component]
-- Description: [technical description of the issue]
+- Description: [technical description of the issue - MUST BE BASED ON ACTUAL DATA]
 
 === RISK ASSESSMENT ===
 - Failure Probability: [LOW (<10%)/MEDIUM (10-50%)/HIGH (>50%)]
 - Timeframe: [IMMEDIATE (<24h)/SHORT (1-7 days)/MEDIUM (1-4 weeks)/LONG (>1 month)]
-- Risk Factors: [list specific factors contributing to risk]
+- Risk Factors: [list specific factors contributing to risk - MUST BE FROM DATA]
 - Impact Assessment: [LOW/MEDIUM/HIGH - potential impact on system operation]
 
 === TECHNICAL METRICS ANALYSIS ===
 For each disk, analyze:
-- SMART Health Status: [PASSED/FAILED/UNKNOWN]
-- Temperature: [value]°C [NORMAL/ELEVATED/CRITICAL]
-- Capacity Utilization: [percentage]% [NORMAL/ELEVATED/CRITICAL]
-- I/O Performance: [NORMAL/DEGRADED/CRITICAL]
-- Key SMART Attributes of Concern: [list specific attributes with values]
+- SMART Health Status: [PASSED/FAILED/UNKNOWN] - MUST MATCH PROVIDED STATUS
+- Temperature: [value]°C [NORMAL/ELEVATED/CRITICAL] - MUST MATCH PROVIDED DATA
+- Capacity Utilization: [percentage]% [NORMAL/ELEVATED/CRITICAL] - MUST MATCH PROVIDED DATA
+- I/O Performance: [NORMAL/DEGRADED/CRITICAL] - MUST BE BASED ON ACTUAL I/O DATA
+- Key SMART Attributes of Concern: [list specific attributes with values - MUST BE FROM ACTUAL SMART DATA]
 
 === ACTIONABLE RECOMMENDATIONS ===
 Provide numbered recommendations in order of priority:
@@ -145,15 +166,25 @@ For each recommendation include:
 - Expected Outcome: [technical benefit of taking this action]
 
 === TECHNICAL SUMMARY ===
-- Root Cause Analysis: [technical explanation of primary issues]
-- Trend Analysis: [notable patterns or trends in the data]
-- Monitoring Focus: [specific metrics to monitor going forward]
+- Root Cause Analysis: [technical explanation of primary issues - MUST BE BASED ON ACTUAL DATA]
+- Trend Analysis: [notable patterns or trends in the data - MUST BE FROM ACTUAL DATA]
+- Monitoring Focus: [specific metrics to monitor going forward - MUST BE FROM ACTUAL DATA]
 - Next Review Date: [recommended date for next comprehensive analysis]
+
+VALIDATION REQUIREMENTS:
+- Every temperature value mentioned MUST match the temperature data provided
+- Every SMART status mentioned MUST match the SMART status provided
+- Every capacity percentage mentioned MUST match the capacity data provided
+- Every disk identifier mentioned MUST be from the actual disk list provided
+- DO NOT INVENT SMART ATTRIBUTES - ONLY USE ACTUAL ATTRIBUTES FROM THE DATA
+- DO NOT INVENT TEMPERATURE THRESHOLDS - USE STANDARD INDUSTRY STANDARDS
 
 IMPORTANT: Use consistent technical terminology throughout the report.
 Maintain professional objectivity and technical accuracy.
 Format the response exactly as shown above with section headers in ALL CAPS and triple equals signs.
-Do not add additional sections or modify the structure."""
+Do not add additional sections or modify the structure.
+
+FINAL WARNING: Any hallucination or invention of technical details will result in incorrect analysis. Stick strictly to the provided data."""
         return prompt
 
     def _format_data_for_prompt(self, disk_data: Dict[str, Any]) -> str:
@@ -535,7 +566,7 @@ Do not add additional sections or modify the structure."""
         return issues
 
     def _extract_technical_metrics(self, response: str) -> Dict[str, Any]:
-        """Extract technical metrics from AI response."""
+        """Extract technical metrics from AI response with enhanced temperature handling."""
         metrics = {
             'disks': [],
             'smart_status': {},
@@ -576,7 +607,8 @@ Do not add additional sections or modify the structure."""
 
                         if 'temperature:' in line.lower():
                             temp_info = line.split(':')[1].strip()
-                            metrics['temperature_analysis'][current_disk] = temp_info
+                            # Enhanced temperature formatting for better display
+                            metrics['temperature_analysis'][current_disk] = self._format_temperature_for_display(temp_info)
 
                         if 'capacity utilization:' in line.lower() or 'capacity:' in line.lower():
                             cap_info = line.split(':')[1].strip()
@@ -606,7 +638,8 @@ Do not add additional sections or modify the structure."""
 
                     if 'temperature:' in line.lower():
                         temp_info = line.split(':')[1].strip()
-                        metrics['temperature_analysis'][current_disk] = temp_info
+                        # Enhanced temperature formatting for better display
+                        metrics['temperature_analysis'][current_disk] = self._format_temperature_for_display(temp_info)
 
                     if 'capacity utilization:' in line.lower() or 'capacity:' in line.lower():
                         cap_info = line.split(':')[1].strip()
@@ -659,6 +692,64 @@ Do not add additional sections or modify the structure."""
         metrics['disk_capacities'] = unique_capacities
 
         return metrics
+
+    def _format_temperature_for_display(self, temp_info: str) -> str:
+        """
+        Format temperature information for optimal display in reports.
+
+        Args:
+            temp_info (str): Raw temperature information from AI
+
+        Returns:
+            str: Formatted temperature information
+        """
+        if not temp_info:
+            return "Not available"
+
+        # Try to extract temperature value and format it consistently
+        temp_match = re.search(r'(\d+\.?\d*)\s*°?C', temp_info, re.IGNORECASE)
+        if temp_match:
+            try:
+                temp_value = float(temp_match.group(1))
+                # Classify temperature status
+                if temp_value <= 45:
+                    status = "Normal"
+                elif temp_value <= 60:
+                    status = "Elevated"
+                else:
+                    status = "Critical"
+
+                return f"{temp_value}°C - {status}"
+            except ValueError:
+                pass
+
+        # Try to extract just the number if no degree symbol
+        temp_match = re.search(r'(\d+\.?\d*)', temp_info)
+        if temp_match:
+            try:
+                temp_value = float(temp_match.group(1))
+                # Classify temperature status
+                if temp_value <= 45:
+                    status = "Normal"
+                elif temp_value <= 60:
+                    status = "Elevated"
+                else:
+                    status = "Critical"
+
+                return f"{temp_value}°C - {status}"
+            except ValueError:
+                pass
+
+        # If we can't extract a numeric value, try to extract status from text
+        temp_info_lower = temp_info.lower()
+        if 'critical' in temp_info_lower:
+            return "Temperature - Critical"
+        elif 'elevated' in temp_info_lower or 'high' in temp_info_lower:
+            return "Temperature - Elevated"
+        elif 'normal' in temp_info_lower:
+            return "Temperature - Normal"
+        else:
+            return temp_info  # Return original if we can't parse it
 
     def _validate_ai_output(self, response: str, original_data: Dict[str, Any]) -> Dict[str, Any]:
         """

@@ -180,10 +180,10 @@ class DiskHealthCollector:
             # Determine if this is an NVMe drive
             is_nvme = 'nvme' in device.lower()
 
-            # Try to get SMART data without sudo first, then fallback to sudo
+            # Try to get SMART data with sudo first, then fallback to without sudo
             smartctl_commands = [
-                ['smartctl', '-H', device],  # Try without sudo first
-                ['sudo', 'smartctl', '-H', device]  # Fallback to sudo
+                ['sudo', 'smartctl', '-H', device],  # Try with sudo first
+                ['smartctl', '-H', device]  # Fallback without sudo
             ]
 
             # For NVMe drives, use different command format
@@ -587,11 +587,88 @@ class DiskHealthCollector:
                                         # The temperature is the first number in the RAW_VALUE field
 
                                         # The RAW_VALUE is typically the last field, but we need to extract the first number from it
+                                        # However, some SMART outputs have the raw value as the 10th field (index 9)
+                                        # Let's try multiple approaches to find the correct raw value field
+
+                                        # Approach 1: Try the last field
                                         raw_value_field = parts[-1]
+
+                                        # Approach 2: If the last field doesn't start with a digit, try the 10th field
+                                        if not re.match(r'^\d', raw_value_field) and len(parts) > 9:
+                                            raw_value_field = parts[9]
+
+                                        # Approach 3: If still not good, try to find a field that starts with a digit
+                                        if not re.match(r'^\d', raw_value_field):
+                                            for i in range(len(parts)-1, -1, -1):
+                                                if re.match(r'^\d', parts[i]):
+                                                    raw_value_field = parts[i]
+                                                    break
+
+                                        # Approach 4: If we still have issues, try to extract the temperature from the entire line
+                                        # This handles cases where the temperature might be in a different position
+                                        if not re.match(r'^\d', raw_value_field):
+                                            # Look for temperature pattern in the entire line
+                                            # Pattern: "31 (Min/Max 21/45)" - extract the first number before the parentheses
+                                            line_temp_match = re.search(r'(\d+)\s*\(', line)
+                                            if line_temp_match:
+                                                raw_value_field = line_temp_match.group(1)
+                                                print(f"  🔢 Extracted from line pattern: {raw_value_field}")
+
+                                        # Approach 5: If we still have issues, try to find the temperature value in the line
+                                        # This handles cases where the temperature might be in a different format
+                                        if not re.match(r'^\d', raw_value_field):
+                                            # Look for any temperature pattern in the line
+                                            # This handles formats like: "31 (Min/Max 21/45)", "31", etc.
+                                            all_temp_matches = re.findall(r'\b(\d{1,3})\b', line)
+                                            if all_temp_matches:
+                                                # The first number in the line is usually the current temperature
+                                                # Skip the ID field (first number) and look for the temperature
+                                                for temp_str in all_temp_matches:
+                                                    temp_value = int(temp_str)
+                                                    # Check if this looks like a reasonable temperature
+                                                    if 10 <= temp_value <= 80:
+                                                        raw_value_field = temp_str
+                                                        print(f"  🔢 Found temperature in line: {raw_value_field}")
+                                                        break
+
+                                        # Approach 6: If we still have issues, try to find the temperature value in the line
+                                        # This handles cases where the temperature might be in a different format
+                                        # Check if the raw_value_field looks like it contains min/max data
+                                        if re.match(r'^\d+/\d+\)', raw_value_field):
+                                            # This looks like "21/45)" which is the min/max format
+                                            # We need to extract the current temperature from the line
+                                            line_temp_match = re.search(r'(\d+)\s*\(', line)
+                                            if line_temp_match:
+                                                raw_value_field = line_temp_match.group(1)
+                                                print(f"  🔢 Extracted current temperature from min/max format: {raw_value_field}")
+
+                                        # Approach 7: If we still have issues, try to find the temperature value in the line
+                                        # This handles cases where the temperature might be in a different format
+                                        # Check if the raw_value_field looks like it contains extended data format
+                                        if re.match(r'^\d+\s*\(', raw_value_field):
+                                            # This looks like "55 (" which is the extended data format
+                                            # We need to extract the current temperature from the line
+                                            line_temp_match = re.search(r'(\d+)\s*\(', line)
+                                            if line_temp_match:
+                                                raw_value_field = line_temp_match.group(1)
+                                                print(f"  🔢 Extracted current temperature from extended format: {raw_value_field}")
+
+                                        # Approach 8: If we still have issues, try to find the temperature value in the line
+                                        # This handles cases where the temperature might be in a different format
+                                        # Check if the raw_value_field looks like it contains extended data format with closing paren
+                                        if re.match(r'^\d+\)', raw_value_field):
+                                            # This looks like "0)" which is the extended data format
+                                            # We need to extract the current temperature from the line
+                                            line_temp_match = re.search(r'(\d+)\s*\(', line)
+                                            if line_temp_match:
+                                                raw_value_field = line_temp_match.group(1)
+                                                print(f"  🔢 Extracted current temperature from extended format with closing paren: {raw_value_field}")
+
                                         print(f"  🔢 Raw value field: {raw_value_field}")
 
                                         # Extract the first number from the raw value field
                                         # This handles formats like: "35", "35 (Min/Max 21/45)", "37 (0 22 0 0 0)", etc.
+                                        # The first number is always the current temperature
                                         temp_match = re.search(r'^(\d+)', raw_value_field)
                                         if temp_match:
                                             temp_value = float(temp_match.group(1))
@@ -604,14 +681,9 @@ class DiskHealthCollector:
                                                 return temp_value
                                             elif temp_value == 0:
                                                 print(f"  ⚠️  Impossible temperature detected: {temp_value}°C (likely parsing error)")
-                                                # Try to extract a different number from the line
-                                                # Sometimes the temperature might be in a different position
-                                                all_numbers = re.findall(r'\b(\d{2,3})\b', line)
-                                                for num_str in all_numbers:
-                                                    potential_temp = float(num_str)
-                                                    if 10 <= potential_temp <= 80:
-                                                        print(f"  🔧 Found better temperature candidate: {potential_temp}°C")
-                                                        return potential_temp
+                                                # Don't try to extract other numbers as they are likely min/max values
+                                                # which are not the current temperature
+                                                continue
                                             else:
                                                 print(f"  ⚠️  Temperature out of reasonable range: {temp_value}°C")
                                         else:

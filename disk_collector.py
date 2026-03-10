@@ -177,11 +177,21 @@ class DiskHealthCollector:
             attributes = {}
             device_info = {}
 
+            # Determine if this is an NVMe drive
+            is_nvme = 'nvme' in device.lower()
+
             # Try to get SMART data without sudo first, then fallback to sudo
             smartctl_commands = [
                 ['smartctl', '-H', device],  # Try without sudo first
                 ['sudo', 'smartctl', '-H', device]  # Fallback to sudo
             ]
+
+            # For NVMe drives, use different command format
+            if is_nvme:
+                smartctl_commands = [
+                    ['smartctl', '-H', '-d', 'nvme', device],
+                    ['sudo', 'smartctl', '-H', '-d', 'nvme', device]
+                ]
 
             # Get SMART overall health
             for cmd in smartctl_commands:
@@ -194,6 +204,10 @@ class DiskHealthCollector:
                             break
                         elif 'FAILED' in health_output:
                             health_status = 'FAILED'
+                            break
+                        elif 'CRITICAL WARNING' in health_output:
+                            # For NVMe drives, check for critical warnings
+                            health_status = 'CRITICAL'
                             break
                         else:
                             health_status = 'UNKNOWN'
@@ -208,26 +222,22 @@ class DiskHealthCollector:
                 ['sudo', 'smartctl', '-A', device]  # Fallback to sudo
             ]
 
+            # For NVMe drives, use different command format
+            if is_nvme:
+                smartctl_attr_commands = [
+                    ['smartctl', '-A', '-d', 'nvme', device],
+                    ['sudo', 'smartctl', '-A', '-d', 'nvme', device]
+                ]
+
             for cmd in smartctl_attr_commands:
                 try:
                     result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
                     if result.returncode == 0:
-                        for line in result.stdout.split('\n'):
-                            if line.strip() and not line.startswith('#') and not line.startswith('ID#'):
-                                parts = line.split()
-                                if len(parts) >= 10:
-                                    try:
-                                        attr_id = parts[0]
-                                        attr_name = parts[1]
-                                        raw_value = parts[-1]
-                                        normalized = parts[3] if len(parts) > 3 else 'N/A'
-                                        attributes[attr_name] = {
-                                            'id': attr_id,
-                                            'raw_value': raw_value,
-                                            'normalized': normalized
-                                        }
-                                    except IndexError:
-                                        continue
+                        # Parse SMART attributes based on drive type
+                        if is_nvme:
+                            attributes = self._parse_nvme_attributes(result.stdout)
+                        else:
+                            attributes = self._parse_sata_attributes(result.stdout)
                         break  # Successfully got attributes, exit loop
                     else:
                         continue  # Try next command
@@ -239,6 +249,13 @@ class DiskHealthCollector:
                 ['smartctl', '-i', device],  # Try without sudo first
                 ['sudo', 'smartctl', '-i', device]  # Fallback to sudo
             ]
+
+            # For NVMe drives, use different command format
+            if is_nvme:
+                smartctl_info_commands = [
+                    ['smartctl', '-i', '-d', 'nvme', device],
+                    ['sudo', 'smartctl', '-i', '-d', 'nvme', device]
+                ]
 
             for cmd in smartctl_info_commands:
                 try:
@@ -263,6 +280,167 @@ class DiskHealthCollector:
 
         except Exception as e:
             return {'error': f'SMART data collection failed for {device}: {str(e)}'}
+
+    def _parse_sata_attributes(self, smart_output: str) -> Dict[str, Dict[str, str]]:
+        """Parse SMART attributes for SATA drives."""
+        attributes = {}
+        for line in smart_output.split('\n'):
+            if line.strip() and not line.startswith('#') and not line.startswith('ID#'):
+                parts = line.split()
+                if len(parts) >= 10:
+                    try:
+                        attr_id = parts[0]
+                        attr_name = parts[1]
+                        raw_value = parts[-1]
+                        normalized = parts[3] if len(parts) > 3 else 'N/A'
+                        attributes[attr_name] = {
+                            'id': attr_id,
+                            'raw_value': raw_value,
+                            'normalized': normalized
+                        }
+                    except IndexError:
+                        continue
+        return attributes
+
+    def _parse_nvme_attributes(self, smart_output: str) -> Dict[str, Dict[str, str]]:
+        """Parse SMART attributes for NVMe drives."""
+        attributes = {}
+        lines = smart_output.split('\n')
+
+        # Look for NVMe-specific attributes
+        for i, line in enumerate(lines):
+            line = line.strip()
+            if not line:
+                continue
+
+            # Parse critical warning
+            if 'Critical Warning' in line:
+                try:
+                    # Extract the hex value
+                    parts = line.split()
+                    for part in parts:
+                        if part.startswith('0x'):
+                            attributes['Critical Warning'] = {
+                                'id': '0x01',
+                                'raw_value': part,
+                                'normalized': 'N/A'
+                            }
+                            break
+                except:
+                    pass
+
+            # Parse temperature
+            elif 'Temperature' in line and 'Sensor' in line:
+                try:
+                    # Look for temperature value in Kelvin or Celsius
+                    temp_match = re.search(r'(\d+)\s*(K|°C|C)', line, re.IGNORECASE)
+                    if temp_match:
+                        temp_value = temp_match.group(1)
+                        temp_unit = temp_match.group(2).upper()
+
+                        # Convert Kelvin to Celsius if needed
+                        if temp_unit == 'K':
+                            temp_c = int(temp_value) - 273
+                        else:
+                            temp_c = int(temp_value)
+
+                        attributes['Temperature'] = {
+                            'id': '0x02',
+                            'raw_value': str(temp_c),
+                            'normalized': 'N/A'
+                        }
+                except:
+                    pass
+
+            # Parse available spare
+            elif 'Available Spare' in line:
+                try:
+                    # Extract percentage value
+                    percent_match = re.search(r'(\d+)%', line)
+                    if percent_match:
+                        attributes['Available Spare'] = {
+                            'id': '0x03',
+                            'raw_value': percent_match.group(1),
+                            'normalized': 'N/A'
+                        }
+                except:
+                    pass
+
+            # Parse media and data integrity errors
+            elif 'Media and Data Integrity Errors' in line:
+                try:
+                    # Extract error count
+                    error_match = re.search(r'(\d+)', line)
+                    if error_match:
+                        attributes['Media and Data Integrity Error Count'] = {
+                            'id': '0x04',
+                            'raw_value': error_match.group(1),
+                            'normalized': 'N/A'
+                        }
+                except:
+                    pass
+
+            # Parse error information log entries
+            elif 'Error Information Log Entries' in line:
+                try:
+                    # Extract entry count
+                    entry_match = re.search(r'(\d+)', line)
+                    if entry_match:
+                        attributes['Error Info Log Entries'] = {
+                            'id': '0x05',
+                            'raw_value': entry_match.group(1),
+                            'normalized': 'N/A'
+                        }
+                except:
+                    pass
+
+            # Parse percentage used
+            elif 'Percentage Used' in line:
+                try:
+                    # Extract percentage value
+                    percent_match = re.search(r'(\d+)%', line)
+                    if percent_match:
+                        attributes['Percentage Used'] = {
+                            'id': '0x06',
+                            'raw_value': percent_match.group(1),
+                            'normalized': 'N/A'
+                        }
+                except:
+                    pass
+
+            # Parse data units read
+            elif 'Data Units Read' in line:
+                try:
+                    # Extract TB value
+                    tb_match = re.search(r'(\d+),(\d+),(\d+)', line)
+                    if tb_match:
+                        # Convert to bytes for consistency
+                        tb_value = int(tb_match.group(1)) * 1000000000000  # Approximate conversion
+                        attributes['Data Units Read'] = {
+                            'id': '0x07',
+                            'raw_value': str(tb_value),
+                            'normalized': 'N/A'
+                        }
+                except:
+                    pass
+
+            # Parse data units written
+            elif 'Data Units Written' in line:
+                try:
+                    # Extract TB value
+                    tb_match = re.search(r'(\d+),(\d+),(\d+)', line)
+                    if tb_match:
+                        # Convert to bytes for consistency
+                        tb_value = int(tb_match.group(1)) * 1000000000000  # Approximate conversion
+                        attributes['Data Units Written'] = {
+                            'id': '0x08',
+                            'raw_value': str(tb_value),
+                            'normalized': 'N/A'
+                        }
+                except:
+                    pass
+
+        return attributes
 
     def _get_usage_data(self, device: str) -> Dict[str, Any]:
         """Get disk usage information."""
@@ -429,19 +607,151 @@ class DiskHealthCollector:
             return None
 
     def _assess_smart_health(self, smart_data: Dict[str, Any]) -> str:
-        """Assess disk health based on SMART data."""
+        """Assess disk health based on SMART data with enhanced NVMe support."""
         if 'error' in smart_data:
             return 'ERROR'
 
+        # First check the overall health status
         health_status = smart_data.get('health_status', 'UNKNOWN')
+
+        # For traditional drives, use the standard logic
         if health_status == 'PASSED':
             return 'GOOD'
         elif health_status == 'FAILED':
             return 'CRITICAL'
         elif health_status == 'UNKNOWN':
-            return 'UNKNOWN'
+            # For UNKNOWN status, analyze individual SMART attributes
+            return self._assess_health_from_attributes(smart_data)
         else:
             return 'WARNING'
+
+    def _assess_health_from_attributes(self, smart_data: Dict[str, Any]) -> str:
+        """Assess health by analyzing individual SMART attributes when overall status is unknown."""
+        attributes = smart_data.get('attributes', {})
+        device_info = smart_data.get('device_info', {})
+
+        # Check if this is an NVMe drive
+        is_nvme = self._is_nvme_drive(device_info)
+
+        critical_issues = 0
+        warning_issues = 0
+
+        # Analyze key SMART attributes for critical issues
+        for attr_name, attr_data in attributes.items():
+            attr_name_upper = attr_name.upper()
+            raw_value = attr_data.get('raw_value', '0')
+
+            # Convert raw value to numeric for analysis
+            numeric_value = self._parse_smart_value(raw_value)
+
+            # NVMe-specific critical attributes
+            if is_nvme:
+                if any(keyword in attr_name_upper for keyword in ['CRITICAL WARNING', 'CRITICAL WARNING']):
+                    if numeric_value > 0:
+                        critical_issues += 1
+
+                if 'AVAILABLE_SPARE' in attr_name_upper:
+                    if numeric_value < 10:  # Less than 10% spare blocks
+                        critical_issues += 1
+
+                if 'MEDIA_AND_DATA_INTEGRITY_ERROR_COUNT' in attr_name_upper:
+                    if numeric_value > 0:
+                        critical_issues += 1
+
+                if 'ERROR_INFO_LOG_ENTRIES' in attr_name_upper:
+                    if numeric_value > 0:
+                        critical_issues += 1
+
+                if 'WEAR_LEVELING_COUNT' in attr_name_upper or 'PERCENTAGE_USED' in attr_name_upper:
+                    if numeric_value > 90:  # Drive is 90% worn
+                        critical_issues += 1
+
+                if 'TEMPERATURE' in attr_name_upper:
+                    if numeric_value > 70:  # Over 70°C
+                        critical_issues += 1
+                    elif numeric_value > 55:  # Over 55°C
+                        warning_issues += 1
+
+            # Traditional drive critical attributes
+            else:
+                if any(keyword in attr_name_upper for keyword in ['REALLOCATED_SECTORS', 'REALLOCATED_EVENT_COUNT']):
+                    if numeric_value > 0:
+                        critical_issues += 1
+
+                if 'READ_ERROR_RATE' in attr_name_upper:
+                    # Parse percentage value from strings like "83.9%" or extract from raw value
+                    if isinstance(raw_value, str) and '%' in raw_value:
+                        try:
+                            error_rate = float(raw_value.replace('%', '').strip())
+                            if error_rate > 50:  # High error rate
+                                critical_issues += 1
+                            elif error_rate > 20:  # Moderate error rate
+                                warning_issues += 1
+                        except ValueError:
+                            pass
+                    elif numeric_value > 1000:  # High raw error count
+                        critical_issues += 1
+
+                if 'WEAR_LEVELING_COUNT' in attr_name_upper or 'WEAR_LEVELING' in attr_name_upper:
+                    if numeric_value > 90:  # Drive is 90% worn
+                        critical_issues += 1
+
+                if 'TEMPERATURE' in attr_name_upper or 'TEMP' in attr_name_upper:
+                    if numeric_value > 60:  # Over 60°C
+                        critical_issues += 1
+                    elif numeric_value > 45:  # Over 45°C
+                        warning_issues += 1
+
+                if 'POWER_ON_HOURS' in attr_name_upper:
+                    if numeric_value > 60000:  # Over 60,000 hours (about 7 years)
+                        warning_issues += 1
+
+        # Determine health status based on issues found
+        if critical_issues > 0:
+            return 'CRITICAL'
+        elif warning_issues > 0:
+            return 'WARNING'
+        else:
+            return 'GOOD'
+
+    def _is_nvme_drive(self, device_info: Dict[str, str]) -> bool:
+        """Check if the device is an NVMe drive."""
+        model = device_info.get('Device Model', '').upper()
+        return 'NVME' in model or 'SAMSUNG' in model or 'KINGSTON' in model or 'CRUCIAL' in model
+
+    def _parse_smart_value(self, raw_value: str) -> float:
+        """Parse SMART attribute raw value to numeric."""
+        if not raw_value:
+            return 0.0
+
+        # Handle percentage values
+        if isinstance(raw_value, str) and '%' in raw_value:
+            try:
+                return float(raw_value.replace('%', '').strip())
+            except ValueError:
+                pass
+
+        # Handle hex values
+        if isinstance(raw_value, str) and raw_value.startswith('0x'):
+            try:
+                return float(int(raw_value, 16))
+            except ValueError:
+                pass
+
+        # Handle comma-separated numbers
+        if isinstance(raw_value, str):
+            try:
+                # Remove commas and convert to float
+                clean_value = raw_value.replace(',', '').replace(' ', '')
+                return float(clean_value)
+            except ValueError:
+                pass
+
+        # Try direct conversion
+        try:
+            return float(raw_value)
+        except (ValueError, TypeError):
+            return 0.0
 
     def _generate_summary(self, disk_data: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Generate a summary of all disk health data."""

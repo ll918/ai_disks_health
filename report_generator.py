@@ -230,15 +230,6 @@ class ReportGenerator:
             for device in sorted_devices:
                 config_lines.append(f"Device: {device}")
 
-                # Add SMART Status
-                if device in smart_status:
-                    # Clean up SMART status to remove any trailing text
-                    smart_status_clean = smart_status[device]
-                    if "The disks are currently operating within acceptable parameters" in smart_status_clean:
-                        # Extract just the status part
-                        smart_status_clean = smart_status_clean.replace(" - The disks are currently operating within acceptable parameters", "")
-                    config_lines.append(f"  SMART Status: {smart_status_clean}")
-
                 # Add device model if available
                 if device in device_models and device_models[device] != 'Unknown':
                     config_lines.append(f"  Model: {device_models[device]}")
@@ -248,6 +239,15 @@ class ReportGenerator:
                     # Try to convert capacity to human-readable format
                     human_readable_capacity = self._bytes_to_human_readable(disk_capacities[device])
                     config_lines.append(f"  Capacity: {human_readable_capacity}")
+
+                # Add SMART Status
+                if device in smart_status:
+                    # Clean up SMART status to remove any trailing text
+                    smart_status_clean = smart_status[device]
+                    if "The disks are currently operating within acceptable parameters" in smart_status_clean:
+                        # Extract just the status part
+                        smart_status_clean = smart_status_clean.replace(" - The disks are currently operating within acceptable parameters", "")
+                    config_lines.append(f"  SMART Status: {smart_status_clean}")
 
                 # Add temperature if available
                 if device in temperature_analysis:
@@ -263,8 +263,18 @@ class ReportGenerator:
 
                 config_lines.append("")
 
-            # Add summary text at the end of the section
-            config_lines.append("The disks are currently operating within acceptable parameters.")
+            # Add appropriate summary text based on the actual health status
+            critical_count = sum(1 for status in smart_status.values() if 'CRITICAL' in status.upper() or 'FAILED' in status.upper())
+            warning_count = sum(1 for status in smart_status.values() if 'WARNING' in status.upper() or 'UNKNOWN' in status.upper())
+
+            if critical_count > 0:
+                config_lines.append("⚠️  WARNING: Critical disk health issues detected!")
+                config_lines.append("Immediate attention required for failed or critical disks.")
+            elif warning_count > 0:
+                config_lines.append("⚠️  WARNING: Some disks show warning signs.")
+                config_lines.append("Monitor these disks closely and consider preventive measures.")
+            else:
+                config_lines.append("✅ All disks are currently operating within acceptable parameters.")
         else:
             # Enhanced fallback: Try to extract device info from the AI analysis text
             analysis_text = analysis_data.get('analysis', '')

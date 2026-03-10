@@ -535,68 +535,103 @@ Do not add additional sections or modify the structure."""
                 continue
 
             if in_metrics_section:
-                # Look for disk-specific metrics
-                if line.strip().startswith('for each disk') or line.strip().startswith('disk'):
-                    continue
-                elif 'smart health status:' in line.lower():
-                    status = line.split(':')[1].strip().strip('[]')
-                    if current_disk:
-                        metrics['smart_status'][current_disk] = status
-                elif 'temperature:' in line.lower():
-                    temp_info = line.split(':')[1].strip()
-                    if current_disk:
-                        metrics['temperature_analysis'][current_disk] = temp_info
-                elif 'capacity utilization:' in line.lower():
-                    cap_info = line.split(':')[1].strip()
-                    if current_disk:
-                        metrics['capacity_analysis'][current_disk] = cap_info
-                elif 'i/o performance:' in line.lower():
-                    io_info = line.split(':')[1].strip()
-                    if current_disk:
-                        metrics['io_performance'][current_disk] = io_info
-                elif 'model:' in line.lower():
-                    model_info = line.split(':')[1].strip()
-                    if current_disk:
-                        metrics['device_models'][current_disk] = model_info
-                elif 'capacity:' in line.lower():
-                    capacity_info = line.split(':')[1].strip()
-                    if current_disk:
-                        metrics['disk_capacities'][current_disk] = capacity_info
-                elif 'filesystem:' in line.lower() or 'fstype:' in line.lower():
-                    fs_info = line.split(':')[1].strip()
-                    if current_disk:
-                        metrics['filesystem_types'][current_disk] = fs_info
-                # Handle the format from the AI response (e.g., "SMART Health Status: FAILED")
-                elif 'smart health status' in line.lower() and ':' in line:
-                    parts = line.split(':')
-                    if len(parts) >= 2:
-                        status = parts[1].strip()
-                        # Try to find the disk from context or use a generic name
-                        if current_disk:
+                # Enhanced disk identification - look for device identifiers
+                device_match = re.search(r'/dev/[^,\s]+', line)
+                if device_match:
+                    current_disk = device_match.group(0)
+                    # Ensure we only process each device once to avoid duplicates
+                    if current_disk not in metrics['smart_status']:
+                        # Extract all metrics for this device from this line
+                        if 'smart health status:' in line.lower():
+                            status = line.split(':')[1].strip().strip('[]')
                             metrics['smart_status'][current_disk] = status
-                        else:
-                            # Look for disk identifier in the line or previous lines
-                            for prev_line in lines[max(0, lines.index(line)-5):lines.index(line)]:
-                                if '/dev/' in prev_line:
-                                    disk_match = re.search(r'/dev/[^,\s]+', prev_line)
-                                    if disk_match:
-                                        current_disk = disk_match.group(0)
-                                        metrics['smart_status'][current_disk] = status
-                                        break
-                # Enhanced disk identification from AI response format
-                elif '/dev/' in line and ('DISK' in line or 'Device' in line):
-                    disk_match = re.search(r'/dev/[^,\s]+', line)
-                    if disk_match:
-                        current_disk = disk_match.group(0)
-                        # Also extract model and capacity if mentioned in the same line
-                        if 'Model:' in line:
-                            model_match = re.search(r'Model:\s*([^,\n]+)', line)
-                            if model_match:
-                                metrics['device_models'][current_disk] = model_match.group(1).strip()
-                        if 'Capacity:' in line:
-                            capacity_match = re.search(r'Capacity:\s*([^,\n]+)', line)
-                            if capacity_match:
-                                metrics['disk_capacities'][current_disk] = capacity_match.group(1).strip()
+                        elif 'status:' in line.lower():
+                            status = line.split(':')[1].strip().strip('[]')
+                            metrics['smart_status'][current_disk] = status
+
+                        if 'temperature:' in line.lower():
+                            temp_info = line.split(':')[1].strip()
+                            metrics['temperature_analysis'][current_disk] = temp_info
+
+                        if 'capacity utilization:' in line.lower() or 'capacity:' in line.lower():
+                            cap_info = line.split(':')[1].strip()
+                            metrics['capacity_analysis'][current_disk] = cap_info
+
+                        if 'i/o performance:' in line.lower():
+                            io_info = line.split(':')[1].strip()
+                            metrics['io_performance'][current_disk] = io_info
+
+                        if 'model:' in line.lower():
+                            model_info = line.split(':')[1].strip()
+                            metrics['device_models'][current_disk] = model_info
+
+                        if 'filesystem:' in line.lower() or 'fstype:' in line.lower():
+                            fs_info = line.split(':')[1].strip()
+                            metrics['filesystem_types'][current_disk] = fs_info
+
+                # Handle lines that don't have device identifiers but contain metrics
+                # Only process if we have a current disk context
+                elif current_disk and current_disk not in metrics['smart_status']:
+                    if 'smart health status:' in line.lower():
+                        status = line.split(':')[1].strip().strip('[]')
+                        metrics['smart_status'][current_disk] = status
+                    elif 'status:' in line.lower():
+                        status = line.split(':')[1].strip().strip('[]')
+                        metrics['smart_status'][current_disk] = status
+
+                    if 'temperature:' in line.lower():
+                        temp_info = line.split(':')[1].strip()
+                        metrics['temperature_analysis'][current_disk] = temp_info
+
+                    if 'capacity utilization:' in line.lower() or 'capacity:' in line.lower():
+                        cap_info = line.split(':')[1].strip()
+                        metrics['capacity_analysis'][current_disk] = cap_info
+
+                    if 'i/o performance:' in line.lower():
+                        io_info = line.split(':')[1].strip()
+                        metrics['io_performance'][current_disk] = io_info
+
+                    if 'model:' in line.lower():
+                        model_info = line.split(':')[1].strip()
+                        metrics['device_models'][current_disk] = model_info
+
+                    if 'filesystem:' in line.lower() or 'fstype:' in line.lower():
+                        fs_info = line.split(':')[1].strip()
+                        metrics['filesystem_types'][current_disk] = fs_info
+
+        # Clean up any duplicate entries by ensuring each device appears only once
+        # This handles cases where the AI might have repeated information
+        unique_smart_status = {}
+        unique_temperature = {}
+        unique_capacity = {}
+        unique_io = {}
+        unique_models = {}
+        unique_filesystems = {}
+        unique_capacities = {}
+
+        for device in metrics['smart_status']:
+            if device not in unique_smart_status:
+                unique_smart_status[device] = metrics['smart_status'][device]
+                if device in metrics['temperature_analysis']:
+                    unique_temperature[device] = metrics['temperature_analysis'][device]
+                if device in metrics['capacity_analysis']:
+                    unique_capacity[device] = metrics['capacity_analysis'][device]
+                if device in metrics['io_performance']:
+                    unique_io[device] = metrics['io_performance'][device]
+                if device in metrics['device_models']:
+                    unique_models[device] = metrics['device_models'][device]
+                if device in metrics['filesystem_types']:
+                    unique_filesystems[device] = metrics['filesystem_types'][device]
+                if device in metrics['disk_capacities']:
+                    unique_capacities[device] = metrics['disk_capacities'][device]
+
+        metrics['smart_status'] = unique_smart_status
+        metrics['temperature_analysis'] = unique_temperature
+        metrics['capacity_analysis'] = unique_capacity
+        metrics['io_performance'] = unique_io
+        metrics['device_models'] = unique_models
+        metrics['filesystem_types'] = unique_filesystems
+        metrics['disk_capacities'] = unique_capacities
 
         return metrics
 

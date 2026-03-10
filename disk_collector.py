@@ -177,64 +177,82 @@ class DiskHealthCollector:
             attributes = {}
             device_info = {}
 
+            # Try to get SMART data without sudo first, then fallback to sudo
+            smartctl_commands = [
+                ['smartctl', '-H', device],  # Try without sudo first
+                ['sudo', 'smartctl', '-H', device]  # Fallback to sudo
+            ]
+
             # Get SMART overall health
-            try:
-                result = subprocess.run(['sudo', 'smartctl', '-H', device],
-                                      capture_output=True, text=True, timeout=30)
-                if result.returncode == 0:
-                    health_output = result.stdout
-                    if 'PASSED' in health_output:
-                        health_status = 'PASSED'
-                    elif 'FAILED' in health_output:
-                        health_status = 'FAILED'
+            for cmd in smartctl_commands:
+                try:
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                    if result.returncode == 0:
+                        health_output = result.stdout
+                        if 'PASSED' in health_output:
+                            health_status = 'PASSED'
+                            break
+                        elif 'FAILED' in health_output:
+                            health_status = 'FAILED'
+                            break
+                        else:
+                            health_status = 'UNKNOWN'
                     else:
-                        health_status = 'UNKNOWN'
-                else:
-                    # Health check failed, but we can still get other SMART data
-                    health_status = 'UNKNOWN'
-            except Exception as e:
-                print(f"Warning: Could not get SMART health for {device}: {e}")
-                health_status = 'UNKNOWN'
+                        continue  # Try next command
+                except Exception:
+                    continue  # Try next command
 
-            # Get detailed SMART attributes
-            try:
-                result = subprocess.run(['sudo', 'smartctl', '-A', device],
-                                      capture_output=True, text=True, timeout=30)
-                if result.returncode == 0:
-                    for line in result.stdout.split('\n'):
-                        if line.strip() and not line.startswith('#') and not line.startswith('ID#'):
-                            parts = line.split()
-                            if len(parts) >= 10:
-                                try:
-                                    attr_id = parts[0]
-                                    attr_name = parts[1]
-                                    raw_value = parts[-1]
-                                    normalized = parts[3] if len(parts) > 3 else 'N/A'
-                                    attributes[attr_name] = {
-                                        'id': attr_id,
-                                        'raw_value': raw_value,
-                                        'normalized': normalized
-                                    }
-                                except IndexError:
-                                    continue
-                else:
-                    print(f"Warning: Could not get SMART attributes for {device}: {result.stderr}")
-            except Exception as e:
-                print(f"Warning: Exception getting SMART attributes for {device}: {e}")
+            # Try to get SMART attributes without sudo first, then fallback to sudo
+            smartctl_attr_commands = [
+                ['smartctl', '-A', device],  # Try without sudo first
+                ['sudo', 'smartctl', '-A', device]  # Fallback to sudo
+            ]
 
-            # Get device information
-            try:
-                result = subprocess.run(['sudo', 'smartctl', '-i', device],
-                                      capture_output=True, text=True, timeout=30)
-                if result.returncode == 0:
-                    for line in result.stdout.split('\n'):
-                        if ':' in line:
-                            key, value = line.split(':', 1)
-                            device_info[key.strip()] = value.strip()
-                else:
-                    print(f"Warning: Could not get device info for {device}: {result.stderr}")
-            except Exception as e:
-                print(f"Warning: Exception getting device info for {device}: {e}")
+            for cmd in smartctl_attr_commands:
+                try:
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                    if result.returncode == 0:
+                        for line in result.stdout.split('\n'):
+                            if line.strip() and not line.startswith('#') and not line.startswith('ID#'):
+                                parts = line.split()
+                                if len(parts) >= 10:
+                                    try:
+                                        attr_id = parts[0]
+                                        attr_name = parts[1]
+                                        raw_value = parts[-1]
+                                        normalized = parts[3] if len(parts) > 3 else 'N/A'
+                                        attributes[attr_name] = {
+                                            'id': attr_id,
+                                            'raw_value': raw_value,
+                                            'normalized': normalized
+                                        }
+                                    except IndexError:
+                                        continue
+                        break  # Successfully got attributes, exit loop
+                    else:
+                        continue  # Try next command
+                except Exception:
+                    continue  # Try next command
+
+            # Try to get device information without sudo first, then fallback to sudo
+            smartctl_info_commands = [
+                ['smartctl', '-i', device],  # Try without sudo first
+                ['sudo', 'smartctl', '-i', device]  # Fallback to sudo
+            ]
+
+            for cmd in smartctl_info_commands:
+                try:
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                    if result.returncode == 0:
+                        for line in result.stdout.split('\n'):
+                            if ':' in line:
+                                key, value = line.split(':', 1)
+                                device_info[key.strip()] = value.strip()
+                        break  # Successfully got device info, exit loop
+                    else:
+                        continue  # Try next command
+                except Exception:
+                    continue  # Try next command
 
             return {
                 'health_status': health_status,
@@ -420,6 +438,8 @@ class DiskHealthCollector:
             return 'GOOD'
         elif health_status == 'FAILED':
             return 'CRITICAL'
+        elif health_status == 'UNKNOWN':
+            return 'UNKNOWN'
         else:
             return 'WARNING'
 
@@ -479,7 +499,10 @@ class DiskHealthCollector:
             temp = disk.get('temperature')
             if temp is not None:
                 if temp in temperatures:
-                    print(f"⚠️  Warning: Same temperature ({temp}°C) found for {disk['device']} and {temperatures[temp]}")
+                    # Only warn if these are actually different devices (not just different partitions)
+                    existing_device = temperatures[temp]
+                    if disk['device'] != existing_device:
+                        print(f"⚠️  Warning: Same temperature ({temp}°C) found for {disk['device']} and {existing_device}")
                 else:
                     temperatures[temp] = disk['device']
 
@@ -494,7 +517,9 @@ class DiskHealthCollector:
                 signature = f"{model}_{serial}"
 
                 if signature in smart_signatures and signature != '_':
-                    print(f"⚠️  Warning: Similar device info found for {disk['device']} and {smart_signatures[signature]}")
+                    existing_device = smart_signatures[signature]
+                    if disk['device'] != existing_device:
+                        print(f"⚠️  Warning: Similar device info found for {disk['device']} and {existing_device}")
                 else:
                     smart_signatures[signature] = disk['device']
 
@@ -503,13 +528,26 @@ class DiskHealthCollector:
         for disk in disk_data:
             usage_data = disk.get('usage_data', {})
             if usage_data:
-                # Create a signature based on usage patterns
+                # Create a signature based on usage patterns, but be more lenient
                 total_usage = sum(usage.get('percent', 0) for mount, usage in usage_data.items()
                                 if isinstance(usage, dict) and 'percent' in usage)
-                signature = f"{len(usage_data)}_partitions_{total_usage:.1f}%"
+                partition_count = len([u for u in usage_data.values() if isinstance(u, dict) and 'percent' in u])
+                signature = f"{partition_count}_partitions_{total_usage:.0f}%"
 
                 if signature in usage_signatures:
-                    print(f"⚠️  Warning: Similar usage pattern found for {disk['device']} and {usage_signatures[signature]}")
+                    existing_device = usage_signatures[signature]
+                    if disk['device'] != existing_device:
+                        # Only warn if the usage is very similar (within 5%)
+                        try:
+                            existing_parts = usage_signatures[signature].split('_')
+                            if len(existing_parts) >= 3:
+                                existing_total_str = existing_parts[-1].replace('%', '')
+                                existing_total = float(existing_total_str)
+                                if abs(total_usage - existing_total) < 5:
+                                    print(f"⚠️  Warning: Similar usage pattern found for {disk['device']} and {existing_device}")
+                        except (ValueError, IndexError):
+                            # Skip validation if we can't parse the existing signature
+                            pass
                 else:
                     usage_signatures[signature] = disk['device']
 

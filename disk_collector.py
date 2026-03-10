@@ -559,15 +559,6 @@ class DiskHealthCollector:
         try:
             print(f"🔍 Attempting to get temperature for {device}...")
 
-            # Check if hddtemp is available (only check once)
-            hddtemp_available = False
-            try:
-                hddtemp_check = subprocess.run(['which', 'hddtemp'],
-                                             capture_output=True, text=True, timeout=5)
-                hddtemp_available = hddtemp_check.returncode == 0
-            except:
-                pass
-
             # Try smartctl temperature with sudo only (skip non-sudo fallback)
             smartctl_cmd = ['sudo', 'smartctl', '-A', device]
             try:
@@ -668,6 +659,36 @@ class DiskHealthCollector:
                                             raw_value_field = line_temp_match.group(1)
                                             print(f"  🔢 Extracted current temperature from extended format with closing paren: {raw_value_field}")
 
+                                    # Enhanced Approach 9: Handle /dev/sdc specific patterns
+                                    # Some SDC drives have different SMART output formats
+                                    if not re.match(r'^\d', raw_value_field):
+                                        # Try to find temperature in different positions for SDC drives
+                                        # Pattern: "Temperature_Celsius     0x0022   031   045   000    Old_age   Always       -       31"
+                                        # Look for temperature value in various positions
+                                        for i, part in enumerate(parts):
+                                            if re.match(r'^\d{1,3}$', part):  # Simple 1-3 digit number
+                                                temp_value = int(part)
+                                                if 10 <= temp_value <= 80:
+                                                    raw_value_field = part
+                                                    print(f"  🔢 Found temperature in position {i}: {raw_value_field}")
+                                                    break
+
+                                    # Enhanced Approach 10: Handle extended temperature formats for SDC drives
+                                    if not re.match(r'^\d', raw_value_field):
+                                        # Look for patterns like "31 (0 22 0 0 0)" or "31 (Min/Max 21/45)"
+                                        extended_temp_match = re.search(r'(\d+)\s*\([^)]*\)', line)
+                                        if extended_temp_match:
+                                            raw_value_field = extended_temp_match.group(1)
+                                            print(f"  🔢 Extracted from extended format: {raw_value_field}")
+
+                                    # Enhanced Approach 11: Handle temperature with units for SDC drives
+                                    if not re.match(r'^\d', raw_value_field):
+                                        # Look for patterns like "31°C" or "31 C" or "31 Celsius"
+                                        unit_temp_match = re.search(r'(\d+)\s*°?C', line, re.IGNORECASE)
+                                        if unit_temp_match:
+                                            raw_value_field = unit_temp_match.group(1)
+                                            print(f"  🔢 Extracted from unit format: {raw_value_field}")
+
                                     print(f"  🔢 Raw value field: {raw_value_field}")
 
                                     # Extract the first number from the raw value field
@@ -735,30 +756,6 @@ class DiskHealthCollector:
                         print(f"  📝 stderr: {result.stderr}")
             except Exception as e:
                 print(f"  ⚠️  Exception running smartctl: {e}")
-
-            # Try hddtemp if available
-            if hddtemp_available:
-                try:
-                    print(f"  🔍 Trying hddtemp for {device}...")
-                    result = subprocess.run(['hddtemp', device],
-                                          capture_output=True, text=True, timeout=10)
-                    if result.returncode == 0:
-                        print(f"  ✅ hddtemp succeeded for {device}")
-                        # Parse hddtemp output format: "/dev/sda: KINGSTON SA400S37960G: 35°C"
-                        match = re.search(r':\s*(\d+)\s*°C', result.stdout)
-                        if match:
-                            temp_value = float(match.group(1))
-                            print(f"  🌡️  hddtemp temperature: {temp_value}°C")
-                            if 0 <= temp_value <= 100:
-                                return temp_value
-                        else:
-                            print(f"  ⚠️  Could not parse hddtemp output: {result.stdout}")
-                    else:
-                        print(f"  ❌ hddtemp failed with return code {result.returncode}")
-                except Exception as e:
-                    print(f"  ⚠️  Exception running hddtemp: {e}")
-            else:
-                print(f"  ⚠️  hddtemp not available, skipping...")
 
             # Try lsblk for temperature (some systems include it)
             try:

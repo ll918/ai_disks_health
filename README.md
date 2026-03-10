@@ -253,7 +253,6 @@ docker-compose down
 
 ### System Tools
 - `smartctl` - SMART data collection (optional but recommended)
-- `hddtemp` - Temperature monitoring (optional)
 
 ## Troubleshooting
 

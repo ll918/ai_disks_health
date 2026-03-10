@@ -214,6 +214,7 @@ class ReportGenerator:
         device_models = technical_metrics.get('device_models', {})
         disk_capacities = technical_metrics.get('disk_capacities', {})
         filesystem_types = technical_metrics.get('filesystem_types', {})
+        mounting_points = technical_metrics.get('mounting_points', {})
 
         # If we have device info from technical metrics, use it
         if smart_status:
@@ -260,6 +261,14 @@ class ReportGenerator:
                 # Add filesystem type if available
                 if device in filesystem_types and filesystem_types[device] != 'Unknown':
                     config_lines.append(f"  Filesystem: {filesystem_types[device]}")
+
+                # Add mounting points if available
+                if device in mounting_points and mounting_points[device]:
+                    mounting_points_list = mounting_points[device]
+                    if len(mounting_points_list) == 1:
+                        config_lines.append(f"  Mount Point: {mounting_points_list[0]}")
+                    else:
+                        config_lines.append(f"  Mount Points: {', '.join(mounting_points_list)}")
 
                 config_lines.append("")
 

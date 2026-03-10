@@ -317,6 +317,18 @@ Do not add additional sections or modify the structure."""
                                     technical_metrics['filesystem_types'] = {}
                                 technical_metrics['filesystem_types'][device] = fstype
 
+                        # Extract mounting points from usage data
+                        if isinstance(data, dict) and 'mountpoint' in data:
+                            mountpoint = data['mountpoint']
+                            if mountpoint != 'Not mounted' and mountpoint != '':
+                                if 'mounting_points' not in technical_metrics:
+                                    technical_metrics['mounting_points'] = {}
+                                # Store mounting points as a list to handle multiple partitions per device
+                                if device not in technical_metrics['mounting_points']:
+                                    technical_metrics['mounting_points'][device] = []
+                                if mountpoint not in technical_metrics['mounting_points'][device]:
+                                    technical_metrics['mounting_points'][device].append(mountpoint)
+
                 # Extract temperature
                 temperature = disk.get('temperature')
                 if temperature is not None and device not in technical_metrics.get('temperature_analysis', {}):

@@ -316,16 +316,14 @@ class DiskHealthCollector:
             # Parse critical warning
             if 'Critical Warning' in line:
                 try:
-                    # Extract the hex value
-                    parts = line.split()
-                    for part in parts:
-                        if part.startswith('0x'):
-                            attributes['Critical Warning'] = {
-                                'id': '0x01',
-                                'raw_value': part,
-                                'normalized': 'N/A'
-                            }
-                            break
+                    # Extract the hex value - look for pattern like "Critical Warning: 0x00"
+                    warning_match = re.search(r'Critical Warning:\s*(0x[0-9a-fA-F]+)', line)
+                    if warning_match:
+                        attributes['Critical Warning'] = {
+                            'id': '0x01',
+                            'raw_value': warning_match.group(1),
+                            'normalized': 'N/A'
+                        }
                 except:
                     pass
 
@@ -355,8 +353,8 @@ class DiskHealthCollector:
             # Parse available spare
             elif 'Available Spare' in line:
                 try:
-                    # Extract percentage value
-                    percent_match = re.search(r'(\d+)%', line)
+                    # Extract percentage value - look for pattern like "Available Spare: 100%"
+                    percent_match = re.search(r'Available Spare:\s*(\d+)%', line)
                     if percent_match:
                         attributes['Available Spare'] = {
                             'id': '0x03',
@@ -369,8 +367,8 @@ class DiskHealthCollector:
             # Parse media and data integrity errors
             elif 'Media and Data Integrity Errors' in line:
                 try:
-                    # Extract error count
-                    error_match = re.search(r'(\d+)', line)
+                    # Extract error count - look for pattern like "Media and Data Integrity Errors: 0"
+                    error_match = re.search(r'Media and Data Integrity Errors:\s*(\d+)', line)
                     if error_match:
                         attributes['Media and Data Integrity Error Count'] = {
                             'id': '0x04',
@@ -383,8 +381,8 @@ class DiskHealthCollector:
             # Parse error information log entries
             elif 'Error Information Log Entries' in line:
                 try:
-                    # Extract entry count
-                    entry_match = re.search(r'(\d+)', line)
+                    # Extract entry count - look for pattern like "Error Information Log Entries: 0"
+                    entry_match = re.search(r'Error Information Log Entries:\s*(\d+)', line)
                     if entry_match:
                         attributes['Error Info Log Entries'] = {
                             'id': '0x05',
@@ -397,8 +395,8 @@ class DiskHealthCollector:
             # Parse percentage used
             elif 'Percentage Used' in line:
                 try:
-                    # Extract percentage value
-                    percent_match = re.search(r'(\d+)%', line)
+                    # Extract percentage value - look for pattern like "Percentage Used: 10%"
+                    percent_match = re.search(r'Percentage Used:\s*(\d+)%', line)
                     if percent_match:
                         attributes['Percentage Used'] = {
                             'id': '0x06',
@@ -411,8 +409,8 @@ class DiskHealthCollector:
             # Parse data units read
             elif 'Data Units Read' in line:
                 try:
-                    # Extract TB value
-                    tb_match = re.search(r'(\d+),(\d+),(\d+)', line)
+                    # Extract TB value - look for pattern like "Data Units Read: 123,456,789 [62.2 TB]"
+                    tb_match = re.search(r'Data Units Read:\s*(\d+),(\d+),(\d+)', line)
                     if tb_match:
                         # Convert to bytes for consistency
                         tb_value = int(tb_match.group(1)) * 1000000000000  # Approximate conversion
@@ -427,8 +425,8 @@ class DiskHealthCollector:
             # Parse data units written
             elif 'Data Units Written' in line:
                 try:
-                    # Extract TB value
-                    tb_match = re.search(r'(\d+),(\d+),(\d+)', line)
+                    # Extract TB value - look for pattern like "Data Units Written: 123,456,789 [62.2 TB]"
+                    tb_match = re.search(r'Data Units Written:\s*(\d+),(\d+),(\d+)', line)
                     if tb_match:
                         # Convert to bytes for consistency
                         tb_value = int(tb_match.group(1)) * 1000000000000  # Approximate conversion

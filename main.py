@@ -10,21 +10,28 @@ import sys
 import argparse
 import json
 import time
+import os
 from typing import Dict, Any, Optional
 from datetime import datetime
+from dotenv import load_dotenv
 
 # Import our modules
 from disk_collector import DiskHealthCollector
 from ai_analyzer import AIDiskAnalyzer
 from report_generator import ReportGenerator
 
+# Load environment variables
+load_dotenv()
+
 
 class DiskHealthMonitor:
     """Main application class for disk health monitoring."""
 
     def __init__(self):
+        # Get model from environment variable or use default
+        model = os.getenv('OLLAMA_MODEL', 'gemma3:1b')
         self.collector = DiskHealthCollector()
-        self.analyzer = AIDiskAnalyzer()
+        self.analyzer = AIDiskAnalyzer(model=model)
         self.reporter = ReportGenerator()
 
     def run_analysis(self, verbose: bool = False, save_report: bool = False,

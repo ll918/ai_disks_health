@@ -3,6 +3,7 @@ ollama>=0.1.5
 psutil>=5.9.0
 click>=8.0.0
 pytz>=2023.3     # Timezone handling for report generation
+python-dotenv>=1.0.0  # Environment variable management
 
 # Optional dependencies for enhanced functionality
 colorama>=0.4.6  # Cross-platform colored terminal text

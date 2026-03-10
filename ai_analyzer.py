@@ -27,6 +27,15 @@ class AIDiskAnalyzer:
         self.model = model
         self.client = None
 
+        # Load environment variables for thresholds
+        import os
+        self.temperature_warning_threshold = int(os.getenv('TEMPERATURE_WARNING_THRESHOLD', '55'))
+        self.temperature_critical_threshold = int(os.getenv('TEMPERATURE_CRITICAL_THRESHOLD', '70'))
+        self.capacity_warning_threshold = int(os.getenv('CAPACITY_WARNING_THRESHOLD', '80'))
+        self.capacity_critical_threshold = int(os.getenv('CAPACITY_CRITICAL_THRESHOLD', '90'))
+        self.wear_level_warning_threshold = int(os.getenv('WEAR_LEVEL_WARNING_THRESHOLD', '80'))
+        self.wear_level_critical_threshold = int(os.getenv('WEAR_LEVEL_CRITICAL_THRESHOLD', '95'))
+
     def analyze_disk_health(self, disk_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Analyze disk health data using AI and generate a comprehensive report.
@@ -253,6 +262,10 @@ Do not add additional sections or modify the structure."""
                 'collection_time': original_data.get('timestamp', 'Unknown')
             }
         }
+
+        # Add data validation to cross-check AI output against actual data
+        validation_results = self._validate_ai_output(response, original_data)
+        report['validation_results'] = validation_results
 
         # Enhance technical metrics with device information from original data
         if 'technical_metrics' not in report:
@@ -646,6 +659,163 @@ Do not add additional sections or modify the structure."""
         metrics['disk_capacities'] = unique_capacities
 
         return metrics
+
+    def _validate_ai_output(self, response: str, original_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Validate AI output against actual collected disk data to ensure accuracy.
+
+        Args:
+            response (str): Raw AI response text
+            original_data (Dict[str, Any]): Original disk data for reference
+
+        Returns:
+            Dict[str, Any]: Validation results with discrepancies found
+        """
+        validation_results = {
+            'discrepancies_found': False,
+            'issues': [],
+            'warnings': [],
+            'validated_metrics': []
+        }
+
+        # Get actual disk data for comparison
+        disks = original_data.get('disks', [])
+
+        # Check for completely fictional temperatures (when actual temp is None)
+        for disk in disks:
+            device = disk.get('device', 'Unknown')
+            actual_temp = disk.get('temperature')
+
+            # If actual temperature is None but AI reports one, it's a hallucination
+            if actual_temp is None:
+                # Look for any temperature mention for this device
+                temp_pattern = rf'{device}.*?Temperature:\s*(\d+)°C'
+                temp_matches = re.findall(temp_pattern, response, re.IGNORECASE)
+
+                if temp_matches:
+                    validation_results['discrepancies_found'] = True
+                    validation_results['issues'].append(
+                        f"AI reported temperature for {device} ({temp_matches[0]}°C) but no temperature data was collected"
+                    )
+
+        # Validate capacity utilization more broadly
+        for disk in disks:
+            device = disk.get('device', 'Unknown')
+            usage_data = disk.get('usage_data', {})
+
+            for mount, data in usage_data.items():
+                if isinstance(data, dict) and 'percent' in data:
+                    actual_usage = data['percent']
+
+                    # Look for capacity mentions for this device (more flexible pattern)
+                    usage_pattern = rf'{device}.*?(\d+)%'
+                    usage_matches = re.findall(usage_pattern, response, re.IGNORECASE)
+
+                    # Check if any of the reported percentages match this mount's usage
+                    usage_found = False
+                    for match in usage_matches:
+                        ai_usage = int(match)
+                        if abs(ai_usage - actual_usage) <= 2:  # Allow 2% tolerance
+                            usage_found = True
+                            validation_results['validated_metrics'].append(f"Capacity for {device} ({mount}): {actual_usage:.1f}%")
+                            break
+
+                    # If no matching usage found, check if AI reported wrong percentage
+                    if not usage_found and usage_matches:
+                        # Find the closest match
+                        closest_match = min(usage_matches, key=lambda x: abs(int(x) - actual_usage))
+                        validation_results['discrepancies_found'] = True
+                        validation_results['issues'].append(
+                            f"Capacity utilization mismatch for {device} ({mount}): AI reported {closest_match}%, actual is {actual_usage:.1f}%"
+                        )
+
+        # Validate SMART health status
+        for disk in disks:
+            device = disk.get('device', 'Unknown')
+            actual_status = disk.get('health_status', 'Unknown')
+
+            # Check if AI reported health status matches actual
+            status_pattern = rf'{device}.*?SMART Health Status:\s*([A-Z]+)'
+            status_match = re.search(status_pattern, response, re.IGNORECASE)
+
+            if status_match:
+                ai_status = status_match.group(1).upper()
+                actual_status_upper = actual_status.upper()
+
+                # Map common status variations
+                status_mapping = {
+                    'PASSED': ['GOOD', 'HEALTHY', 'OK'],
+                    'FAILED': ['CRITICAL', 'BAD'],
+                    'UNKNOWN': ['UNKNOWN', 'UNRELIABLE', 'N/A']
+                }
+
+                # Check if statuses match or are equivalent
+                is_match = False
+                if ai_status == actual_status_upper:
+                    is_match = True
+                else:
+                    for key, variations in status_mapping.items():
+                        if ai_status in variations and actual_status_upper in variations:
+                            is_match = True
+                            break
+
+                if not is_match:
+                    validation_results['discrepancies_found'] = True
+                    validation_results['issues'].append(
+                        f"SMART health status mismatch for {device}: AI reported {ai_status}, actual is {actual_status}"
+                    )
+                else:
+                    validation_results['validated_metrics'].append(f"SMART status for {device}: {actual_status}")
+
+        # Check for AI hallucinations (reported metrics not in original data)
+        device_pattern = r'/dev/[^,\s]+'
+        reported_devices = set(re.findall(device_pattern, response))
+
+        actual_devices = set()
+        for disk in disks:
+            actual_devices.add(disk.get('device', 'Unknown'))
+
+        # Find devices mentioned by AI but not in actual data
+        for device in reported_devices:
+            if device not in actual_devices:
+                validation_results['discrepancies_found'] = True
+                validation_results['issues'].append(
+                    f"AI reported metrics for {device} which was not found in actual disk data"
+                )
+
+        # Check for completely fictional SMART attributes (like "65% available sectors")
+        fictional_smart_pattern = r'(\d+)%\s+(available sectors|wear level|health)'
+        fictional_matches = re.findall(fictional_smart_pattern, response, re.IGNORECASE)
+
+        if fictional_matches:
+            validation_results['discrepancies_found'] = True
+            for match in fictional_matches:
+                validation_results['issues'].append(
+                    f"AI reported fictional SMART attribute: {match[0]}% {match[1]}"
+                )
+
+        # Add warnings for potential issues
+        for disk in disks:
+            device = disk.get('device', 'Unknown')
+            actual_temp = disk.get('temperature')
+            usage_data = disk.get('usage_data', {})
+
+            # Check for high temperatures in actual data
+            if actual_temp is not None and actual_temp > self.temperature_critical_threshold:
+                validation_results['warnings'].append(
+                    f"High temperature detected for {device}: {actual_temp}°C (above {self.temperature_critical_threshold}°C threshold)"
+                )
+
+            # Check for high capacity usage in actual data
+            for mount, data in usage_data.items():
+                if isinstance(data, dict) and 'percent' in data:
+                    actual_usage = data['percent']
+                    if actual_usage > self.capacity_critical_threshold:
+                        validation_results['warnings'].append(
+                            f"High capacity usage detected for {device} ({mount}): {actual_usage:.1f}% (above {self.capacity_critical_threshold}% threshold)"
+                        )
+
+        return validation_results
 
     def _generate_fallback_analysis(self, disk_data: Dict[str, Any]) -> Dict[str, Any]:
         """

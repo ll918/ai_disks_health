@@ -559,200 +559,206 @@ class DiskHealthCollector:
         try:
             print(f"🔍 Attempting to get temperature for {device}...")
 
-            # Try smartctl temperature with sudo
-            smartctl_commands = [
-                ['sudo', 'smartctl', '-A', device],  # Try with sudo first
-                ['smartctl', '-A', device]  # Fallback without sudo
-            ]
+            # Check if hddtemp is available (only check once)
+            hddtemp_available = False
+            try:
+                hddtemp_check = subprocess.run(['which', 'hddtemp'],
+                                             capture_output=True, text=True, timeout=5)
+                hddtemp_available = hddtemp_check.returncode == 0
+            except:
+                pass
 
-            for cmd in smartctl_commands:
-                try:
-                    print(f"  Running: {' '.join(cmd)}")
-                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-                    if result.returncode == 0:
-                        print(f"  ✅ smartctl succeeded for {device}")
-                        for line in result.stdout.split('\n'):
-                            # Handle both traditional and NVMe temperature attributes
-                            if ('Temperature_Celsius' in line or 'Airflow_Temperature_Cel' in line or
-                                'Temperature_Sensor' in line or 'Temperature Sensor' in line or
-                                'Temperature' in line):
+            # Try smartctl temperature with sudo only (skip non-sudo fallback)
+            smartctl_cmd = ['sudo', 'smartctl', '-A', device]
+            try:
+                print(f"  Running: {' '.join(smartctl_cmd)}")
+                result = subprocess.run(smartctl_cmd, capture_output=True, text=True, timeout=30)
+                if result.returncode == 0:
+                    print(f"  ✅ smartctl succeeded for {device}")
+                    for line in result.stdout.split('\n'):
+                        # Handle both traditional and NVMe temperature attributes
+                        if ('Temperature_Celsius' in line or 'Airflow_Temperature_Cel' in line or
+                            'Temperature_Sensor' in line or 'Temperature Sensor' in line or
+                            'Temperature' in line):
 
-                                print(f"  📊 Found temperature line: {line.strip()}")
-                                parts = line.split()
-                                if len(parts) >= 10:
-                                    try:
-                                        # For SMART temperature lines, the temperature is in the Raw Value field
-                                        # Format: ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE
-                                        # Example: 194 Temperature_Celsius     0x0022   035   045   000    Old_age   Always       -       35 (Min/Max 21/45)
-                                        # The temperature is the first number in the RAW_VALUE field
+                            print(f"  📊 Found temperature line: {line.strip()}")
+                            parts = line.split()
+                            if len(parts) >= 10:
+                                try:
+                                    # For SMART temperature lines, the temperature is in the Raw Value field
+                                    # Format: ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE
+                                    # Example: 194 Temperature_Celsius     0x0022   035   045   000    Old_age   Always       -       35 (Min/Max 21/45)
+                                    # The temperature is the first number in the RAW_VALUE field
 
-                                        # The RAW_VALUE is typically the last field, but we need to extract the first number from it
-                                        # However, some SMART outputs have the raw value as the 10th field (index 9)
-                                        # Let's try multiple approaches to find the correct raw value field
+                                    # The RAW_VALUE is typically the last field, but we need to extract the first number from it
+                                    # However, some SMART outputs have the raw value as the 10th field (index 9)
+                                    # Let's try multiple approaches to find the correct raw value field
 
-                                        # Approach 1: Try the last field
-                                        raw_value_field = parts[-1]
+                                    # Approach 1: Try the last field
+                                    raw_value_field = parts[-1]
 
-                                        # Approach 2: If the last field doesn't start with a digit, try the 10th field
-                                        if not re.match(r'^\d', raw_value_field) and len(parts) > 9:
-                                            raw_value_field = parts[9]
+                                    # Approach 2: If the last field doesn't start with a digit, try the 10th field
+                                    if not re.match(r'^\d', raw_value_field) and len(parts) > 9:
+                                        raw_value_field = parts[9]
 
-                                        # Approach 3: If still not good, try to find a field that starts with a digit
-                                        if not re.match(r'^\d', raw_value_field):
-                                            for i in range(len(parts)-1, -1, -1):
-                                                if re.match(r'^\d', parts[i]):
-                                                    raw_value_field = parts[i]
+                                    # Approach 3: If still not good, try to find a field that starts with a digit
+                                    if not re.match(r'^\d', raw_value_field):
+                                        for i in range(len(parts)-1, -1, -1):
+                                            if re.match(r'^\d', parts[i]):
+                                                raw_value_field = parts[i]
+                                                break
+
+                                    # Approach 4: If we still have issues, try to extract the temperature from the entire line
+                                    # This handles cases where the temperature might be in a different position
+                                    if not re.match(r'^\d', raw_value_field):
+                                        # Look for temperature pattern in the entire line
+                                        # Pattern: "31 (Min/Max 21/45)" - extract the first number before the parentheses
+                                        line_temp_match = re.search(r'(\d+)\s*\(', line)
+                                        if line_temp_match:
+                                            raw_value_field = line_temp_match.group(1)
+                                            print(f"  🔢 Extracted from line pattern: {raw_value_field}")
+
+                                    # Approach 5: If we still have issues, try to find the temperature value in the line
+                                    # This handles cases where the temperature might be in a different format
+                                    if not re.match(r'^\d', raw_value_field):
+                                        # Look for any temperature pattern in the line
+                                        # This handles formats like: "31 (Min/Max 21/45)", "31", etc.
+                                        all_temp_matches = re.findall(r'\b(\d{1,3})\b', line)
+                                        if all_temp_matches:
+                                            # The first number in the line is usually the current temperature
+                                            # Skip the ID field (first number) and look for the temperature
+                                            for temp_str in all_temp_matches:
+                                                temp_value = int(temp_str)
+                                                # Check if this looks like a reasonable temperature
+                                                if 10 <= temp_value <= 80:
+                                                    raw_value_field = temp_str
+                                                    print(f"  🔢 Found temperature in line: {raw_value_field}")
                                                     break
 
-                                        # Approach 4: If we still have issues, try to extract the temperature from the entire line
-                                        # This handles cases where the temperature might be in a different position
-                                        if not re.match(r'^\d', raw_value_field):
-                                            # Look for temperature pattern in the entire line
-                                            # Pattern: "31 (Min/Max 21/45)" - extract the first number before the parentheses
-                                            line_temp_match = re.search(r'(\d+)\s*\(', line)
-                                            if line_temp_match:
-                                                raw_value_field = line_temp_match.group(1)
-                                                print(f"  🔢 Extracted from line pattern: {raw_value_field}")
+                                    # Approach 6: If we still have issues, try to find the temperature value in the line
+                                    # This handles cases where the temperature might be in a different format
+                                    # Check if the raw_value_field looks like it contains min/max data
+                                    if re.match(r'^\d+/\d+\)', raw_value_field):
+                                        # This looks like "21/45)" which is the min/max format
+                                        # We need to extract the current temperature from the line
+                                        line_temp_match = re.search(r'(\d+)\s*\(', line)
+                                        if line_temp_match:
+                                            raw_value_field = line_temp_match.group(1)
+                                            print(f"  🔢 Extracted current temperature from min/max format: {raw_value_field}")
 
-                                        # Approach 5: If we still have issues, try to find the temperature value in the line
-                                        # This handles cases where the temperature might be in a different format
-                                        if not re.match(r'^\d', raw_value_field):
-                                            # Look for any temperature pattern in the line
-                                            # This handles formats like: "31 (Min/Max 21/45)", "31", etc.
-                                            all_temp_matches = re.findall(r'\b(\d{1,3})\b', line)
-                                            if all_temp_matches:
-                                                # The first number in the line is usually the current temperature
-                                                # Skip the ID field (first number) and look for the temperature
-                                                for temp_str in all_temp_matches:
-                                                    temp_value = int(temp_str)
-                                                    # Check if this looks like a reasonable temperature
-                                                    if 10 <= temp_value <= 80:
-                                                        raw_value_field = temp_str
-                                                        print(f"  🔢 Found temperature in line: {raw_value_field}")
-                                                        break
+                                    # Approach 7: If we still have issues, try to find the temperature value in the line
+                                    # This handles cases where the temperature might be in a different format
+                                    # Check if the raw_value_field looks like it contains extended data format
+                                    if re.match(r'^\d+\s*\(', raw_value_field):
+                                        # This looks like "55 (" which is the extended data format
+                                        # We need to extract the current temperature from the line
+                                        line_temp_match = re.search(r'(\d+)\s*\(', line)
+                                        if line_temp_match:
+                                            raw_value_field = line_temp_match.group(1)
+                                            print(f"  🔢 Extracted current temperature from extended format: {raw_value_field}")
 
-                                        # Approach 6: If we still have issues, try to find the temperature value in the line
-                                        # This handles cases where the temperature might be in a different format
-                                        # Check if the raw_value_field looks like it contains min/max data
-                                        if re.match(r'^\d+/\d+\)', raw_value_field):
-                                            # This looks like "21/45)" which is the min/max format
-                                            # We need to extract the current temperature from the line
-                                            line_temp_match = re.search(r'(\d+)\s*\(', line)
-                                            if line_temp_match:
-                                                raw_value_field = line_temp_match.group(1)
-                                                print(f"  🔢 Extracted current temperature from min/max format: {raw_value_field}")
+                                    # Approach 8: If we still have issues, try to find the temperature value in the line
+                                    # This handles cases where the temperature might be in a different format
+                                    # Check if the raw_value_field looks like it contains extended data format with closing paren
+                                    if re.match(r'^\d+\)', raw_value_field):
+                                        # This looks like "0)" which is the extended data format
+                                        # We need to extract the current temperature from the line
+                                        line_temp_match = re.search(r'(\d+)\s*\(', line)
+                                        if line_temp_match:
+                                            raw_value_field = line_temp_match.group(1)
+                                            print(f"  🔢 Extracted current temperature from extended format with closing paren: {raw_value_field}")
 
-                                        # Approach 7: If we still have issues, try to find the temperature value in the line
-                                        # This handles cases where the temperature might be in a different format
-                                        # Check if the raw_value_field looks like it contains extended data format
-                                        if re.match(r'^\d+\s*\(', raw_value_field):
-                                            # This looks like "55 (" which is the extended data format
-                                            # We need to extract the current temperature from the line
-                                            line_temp_match = re.search(r'(\d+)\s*\(', line)
-                                            if line_temp_match:
-                                                raw_value_field = line_temp_match.group(1)
-                                                print(f"  🔢 Extracted current temperature from extended format: {raw_value_field}")
+                                    print(f"  🔢 Raw value field: {raw_value_field}")
 
-                                        # Approach 8: If we still have issues, try to find the temperature value in the line
-                                        # This handles cases where the temperature might be in a different format
-                                        # Check if the raw_value_field looks like it contains extended data format with closing paren
-                                        if re.match(r'^\d+\)', raw_value_field):
-                                            # This looks like "0)" which is the extended data format
-                                            # We need to extract the current temperature from the line
-                                            line_temp_match = re.search(r'(\d+)\s*\(', line)
-                                            if line_temp_match:
-                                                raw_value_field = line_temp_match.group(1)
-                                                print(f"  🔢 Extracted current temperature from extended format with closing paren: {raw_value_field}")
+                                    # Extract the first number from the raw value field
+                                    # This handles formats like: "35", "35 (Min/Max 21/45)", "37 (0 22 0 0 0)", etc.
+                                    # The first number is always the current temperature
+                                    temp_match = re.search(r'^(\d+)', raw_value_field)
+                                    if temp_match:
+                                        temp_value = float(temp_match.group(1))
+                                        print(f"  📐 Extracted temperature: {raw_value_field} -> {temp_value}°C")
 
-                                        print(f"  🔢 Raw value field: {raw_value_field}")
-
-                                        # Extract the first number from the raw value field
-                                        # This handles formats like: "35", "35 (Min/Max 21/45)", "37 (0 22 0 0 0)", etc.
-                                        # The first number is always the current temperature
-                                        temp_match = re.search(r'^(\d+)', raw_value_field)
-                                        if temp_match:
-                                            temp_value = float(temp_match.group(1))
-                                            print(f"  📐 Extracted temperature: {raw_value_field} -> {temp_value}°C")
-
-                                            # Validate temperature range (disks typically operate between 10-60°C)
-                                            # 0°C is impossible for an operating disk, so we should be more strict
-                                            if 10 <= temp_value <= 80:
-                                                print(f"  ✅ Valid temperature found: {temp_value}°C")
-                                                return temp_value
-                                            elif temp_value == 0:
-                                                print(f"  ⚠️  Impossible temperature detected: {temp_value}°C (likely parsing error)")
-                                                # Don't try to extract other numbers as they are likely min/max values
-                                                # which are not the current temperature
-                                                continue
-                                            else:
-                                                print(f"  ⚠️  Temperature out of reasonable range: {temp_value}°C")
+                                        # Validate temperature range (disks typically operate between 10-60°C)
+                                        # 0°C is impossible for an operating disk, so we should be more strict
+                                        if 10 <= temp_value <= 80:
+                                            print(f"  ✅ Valid temperature found: {temp_value}°C")
+                                            return temp_value
+                                        elif temp_value == 0:
+                                            print(f"  ⚠️  Impossible temperature detected: {temp_value}°C (likely parsing error)")
+                                            # Don't try to extract other numbers as they are likely min/max values
+                                            # which are not the current temperature
+                                            continue
                                         else:
-                                            print(f"  ⚠️  Could not extract temperature from: {raw_value_field}")
+                                            print(f"  ⚠️  Temperature out of reasonable range: {temp_value}°C")
+                                    else:
+                                        print(f"  ⚠️  Could not extract temperature from: {raw_value_field}")
 
-                                    except (ValueError, IndexError) as e:
-                                        print(f"  ⚠️  Error parsing temperature: {e}")
-                                        continue
-                                else:
-                                    # Handle NVMe temperature lines which have different format
-                                    # NVMe format: "Temperature:                        52 Celsius"
-                                    # or "Temperature Sensor 1:               52 Celsius"
-                                    try:
-                                        # Look for temperature value in the line for NVMe format
-                                        # Pattern: Temperature: [spaces] [number] Celsius
-                                        nvme_temp_match = re.search(r'Temperature:\s*(\d+)\s*Celsius', line, re.IGNORECASE)
-                                        if nvme_temp_match:
-                                            temp_value = float(nvme_temp_match.group(1))
-                                            print(f"  📐 NVMe temperature extracted: {temp_value}°C")
+                                except (ValueError, IndexError) as e:
+                                    print(f"  ⚠️  Error parsing temperature: {e}")
+                                    continue
+                            else:
+                                # Handle NVMe temperature lines which have different format
+                                # NVMe format: "Temperature:                        52 Celsius"
+                                # or "Temperature Sensor 1:               52 Celsius"
+                                try:
+                                    # Look for temperature value in the line for NVMe format
+                                    # Pattern: Temperature: [spaces] [number] Celsius
+                                    nvme_temp_match = re.search(r'Temperature:\s*(\d+)\s*Celsius', line, re.IGNORECASE)
+                                    if nvme_temp_match:
+                                        temp_value = float(nvme_temp_match.group(1))
+                                        print(f"  📐 NVMe temperature extracted: {temp_value}°C")
+
+                                        # Validate temperature range
+                                        if 10 <= temp_value <= 80:
+                                            print(f"  ✅ Valid NVMe temperature found: {temp_value}°C")
+                                            return temp_value
+                                        else:
+                                            print(f"  ⚠️  NVMe temperature out of range: {temp_value}°C")
+                                    else:
+                                        # Try Temperature Sensor pattern
+                                        sensor_temp_match = re.search(r'Temperature Sensor\s*\d*:\s*(\d+)\s*Celsius', line, re.IGNORECASE)
+                                        if sensor_temp_match:
+                                            temp_value = float(sensor_temp_match.group(1))
+                                            print(f"  📐 NVMe sensor temperature extracted: {temp_value}°C")
 
                                             # Validate temperature range
                                             if 10 <= temp_value <= 80:
-                                                print(f"  ✅ Valid NVMe temperature found: {temp_value}°C")
+                                                print(f"  ✅ Valid NVMe sensor temperature found: {temp_value}°C")
                                                 return temp_value
                                             else:
-                                                print(f"  ⚠️  NVMe temperature out of range: {temp_value}°C")
-                                        else:
-                                            # Try Temperature Sensor pattern
-                                            sensor_temp_match = re.search(r'Temperature Sensor\s*\d*:\s*(\d+)\s*Celsius', line, re.IGNORECASE)
-                                            if sensor_temp_match:
-                                                temp_value = float(sensor_temp_match.group(1))
-                                                print(f"  📐 NVMe sensor temperature extracted: {temp_value}°C")
-
-                                                # Validate temperature range
-                                                if 10 <= temp_value <= 80:
-                                                    print(f"  ✅ Valid NVMe sensor temperature found: {temp_value}°C")
-                                                    return temp_value
-                                                else:
-                                                    print(f"  ⚠️  NVMe sensor temperature out of range: {temp_value}°C")
-                                    except (ValueError, IndexError) as e:
-                                        print(f"  ⚠️  Error parsing NVMe temperature: {e}")
-                    else:
-                        print(f"  ❌ smartctl failed with return code {result.returncode}")
-                        if result.stderr:
-                            print(f"  📝 stderr: {result.stderr}")
-                except Exception as e:
-                    print(f"  ⚠️  Exception running smartctl: {e}")
-                    continue
+                                                print(f"  ⚠️  NVMe sensor temperature out of range: {temp_value}°C")
+                                except (ValueError, IndexError) as e:
+                                    print(f"  ⚠️  Error parsing NVMe temperature: {e}")
+                else:
+                    print(f"  ❌ smartctl failed with return code {result.returncode}")
+                    if result.stderr:
+                        print(f"  📝 stderr: {result.stderr}")
+            except Exception as e:
+                print(f"  ⚠️  Exception running smartctl: {e}")
 
             # Try hddtemp if available
-            try:
-                print(f"  🔍 Trying hddtemp for {device}...")
-                result = subprocess.run(['hddtemp', device],
-                                      capture_output=True, text=True, timeout=10)
-                if result.returncode == 0:
-                    print(f"  ✅ hddtemp succeeded for {device}")
-                    # Parse hddtemp output format: "/dev/sda: KINGSTON SA400S37960G: 35°C"
-                    match = re.search(r':\s*(\d+)\s*°C', result.stdout)
-                    if match:
-                        temp_value = float(match.group(1))
-                        print(f"  🌡️  hddtemp temperature: {temp_value}°C")
-                        if 0 <= temp_value <= 100:
-                            return temp_value
+            if hddtemp_available:
+                try:
+                    print(f"  🔍 Trying hddtemp for {device}...")
+                    result = subprocess.run(['hddtemp', device],
+                                          capture_output=True, text=True, timeout=10)
+                    if result.returncode == 0:
+                        print(f"  ✅ hddtemp succeeded for {device}")
+                        # Parse hddtemp output format: "/dev/sda: KINGSTON SA400S37960G: 35°C"
+                        match = re.search(r':\s*(\d+)\s*°C', result.stdout)
+                        if match:
+                            temp_value = float(match.group(1))
+                            print(f"  🌡️  hddtemp temperature: {temp_value}°C")
+                            if 0 <= temp_value <= 100:
+                                return temp_value
+                        else:
+                            print(f"  ⚠️  Could not parse hddtemp output: {result.stdout}")
                     else:
-                        print(f"  ⚠️  Could not parse hddtemp output: {result.stdout}")
-                else:
-                    print(f"  ❌ hddtemp failed with return code {result.returncode}")
-            except Exception as e:
-                print(f"  ⚠️  Exception running hddtemp: {e}")
+                        print(f"  ❌ hddtemp failed with return code {result.returncode}")
+                except Exception as e:
+                    print(f"  ⚠️  Exception running hddtemp: {e}")
+            else:
+                print(f"  ⚠️  hddtemp not available, skipping...")
 
             # Try lsblk for temperature (some systems include it)
             try:
@@ -774,7 +780,11 @@ class DiskHealthCollector:
                                 except ValueError:
                                     continue
                 else:
-                    print(f"  ❌ lsblk failed with return code {result.returncode}")
+                    # Only show lsblk error if it's not a common "no temperature data" error
+                    if "TEMP" not in result.stderr and "temperature" not in result.stderr.lower():
+                        print(f"  ❌ lsblk failed with return code {result.returncode}")
+                    else:
+                        print(f"  ⚠️  lsblk: No temperature data available for {device}")
             except Exception as e:
                 print(f"  ⚠️  Exception running lsblk: {e}")
 
